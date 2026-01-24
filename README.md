@@ -53,6 +53,33 @@ Checks for row counts, uniqueness, and (optionally) spot-checks computed prices 
 stock-data validate
 ```
 
+If you copied `store/` from macOS using zip/unzip, you may have AppleDouble files named like `._*.parquet`.
+DuckDB's `read_parquet()` globbing can pick these up and fail with errors like:
+`Invalid Input Error: No magic bytes found ... '.../._something.parquet'`.
+
+Cleanup on the target machine:
+
+- Linux:
+   - `find store -name '._*' -type f -delete`
+   - `find store -name '.DS_Store' -type f -delete`
+- macOS (before archiving):
+   - `dot_clean -m store`
+
+Safer transfer options:
+
+- `rsync -a --exclude='._*' --exclude='.DS_Store' store/ user@host:/path/to/store/`
+- `COPYFILE_DISABLE=1 tar -czf store.tgz store` (then unpack on Linux)
+
+You can also clean an existing store directory via CLI:
+
+```bash
+# Preview
+stock-data clean-store --store store --dry-run
+
+# Actually delete the files
+stock-data clean-store --store store
+```
+
 ### 4. Query Data (SQL)
 You can run SQL directly against the DuckDB catalog. Views like `v_daily`, `v_adj_factor`, and **`v_daily_adj`** (computed qfq/hfq prices) are auto-created.
 
@@ -182,7 +209,7 @@ con = duckdb.connect()
 df = con.execute(
    """
    SELECT *
-   FROM read_parquet('store/parquet/daily/**/*.parquet', union_by_name=true)
+   FROM read_parquet('store/parquet/daily/**/[!.]*.parquet', union_by_name=true)
    WHERE trade_date = '20231226'
    LIMIT 10
    """

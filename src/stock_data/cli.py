@@ -30,6 +30,13 @@ def _build_parser() -> argparse.ArgumentParser:
     validate = sub.add_parser("validate", parents=[common], help="Validate stored datasets")
     validate.add_argument("--datasets", default="all", help="Comma-separated dataset names or 'all'")
 
+    clean_store = sub.add_parser(
+        "clean-store",
+        parents=[common],
+        help="Remove macOS metadata files (e.g. ._*.parquet) from the store",
+    )
+    clean_store.add_argument("--dry-run", action="store_true", help="Only print what would be deleted")
+
     query = sub.add_parser("query", parents=[common], help="Run a SQL query in DuckDB")
     query.add_argument("--sql", required=True, help="SQL string to execute")
 

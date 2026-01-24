@@ -47,6 +47,14 @@ def run_command(args, *, token: str) -> int:
 
     cfg = RunConfig(store_dir=args.store, rpm=args.rpm, workers=args.workers)
 
+    if args.cmd == "clean-store":
+        from stock_data.clean_store import clean_store_dir
+
+        res = clean_store_dir(cfg.store_dir, dry_run=bool(getattr(args, "dry_run", False)))
+        action = "would remove" if bool(getattr(args, "dry_run", False)) else "removed"
+        print(f"clean-store: {action} {res.deleted_files} files, {res.deleted_dirs} dirs")
+        return 0
+
     if args.cmd == "query":
         from stock_data.storage.duckdb_catalog import DuckDBCatalog
 

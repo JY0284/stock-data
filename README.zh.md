@@ -61,6 +61,33 @@ stock-data update --end-date 20260123
 stock-data validate
 ```
 
+如果你是在 macOS 上把 `store/` 打包（zip）再解压到 Linux，压缩包里可能会带上 AppleDouble 文件（形如 `._*.parquet`）。
+DuckDB 的 `read_parquet()` 在做 glob 时可能会把这些文件也匹配进去，导致报错类似：
+`Invalid Input Error: No magic bytes found ... '.../._something.parquet'`。
+
+在目标机器上清理即可：
+
+- Linux：
+  - `find store -name '._*' -type f -delete`
+  - `find store -name '.DS_Store' -type f -delete`
+- macOS（打包前）：
+  - `dot_clean -m store`
+
+更稳妥的传输方式：
+
+- `rsync -a --exclude='._*' --exclude='.DS_Store' store/ user@host:/path/to/store/`
+- `COPYFILE_DISABLE=1 tar -czf store.tgz store`（在 Linux 解压）
+
+你也可以直接用 CLI 清理已有的 store 目录：
+
+```bash
+# 预览（不删除）
+stock-data clean-store --store store --dry-run
+
+# 实际删除
+stock-data clean-store --store store
+```
+
 ### 4）SQL 查询（DuckDB）
 
 可以直接对 DuckDB 执行 SQL。项目会创建一些视图（例如 `v_daily`、`v_adj_factor`、以及派生的 `v_daily_adj` 等）。
@@ -170,7 +197,7 @@ con = duckdb.connect()
 df = con.execute(
     """
     SELECT *
-    FROM read_parquet('store/parquet/daily/**/*.parquet', union_by_name=true)
+    FROM read_parquet('store/parquet/daily/**/[!.]*.parquet', union_by_name=true)
     WHERE trade_date = '20231226'
     LIMIT 10
     """

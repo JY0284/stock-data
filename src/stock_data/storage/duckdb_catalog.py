@@ -126,7 +126,9 @@ class DuckDBCatalog:
 
     def parquet_glob(self, dataset: str) -> str:
         # DuckDB read_parquet supports globbing.
-        return os.path.join(self.parquet_root, dataset, "**", "*.parquet")
+        # Exclude macOS AppleDouble dotfiles (e.g. `._*.parquet`) which can appear
+        # after zip/unzip and break DuckDB parquet readers.
+        return os.path.join(self.parquet_root, dataset, "**", "[!.]*.parquet")
 
     def fail_running_partitions(self, *, reason: str = "stale running (previous run interrupted)", older_than_seconds: int | None = 300) -> int:
         """Mark leftover `running` partitions as `failed`.

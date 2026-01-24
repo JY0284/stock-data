@@ -744,7 +744,7 @@ class StockStore:
     def _year_window_glob(self, dataset: str, *, year: int | None) -> str | list[str]:
         base = os.path.join(self.parquet_dir, dataset)
         if year is None:
-            return os.path.join(base, "*.parquet")
+            return os.path.join(base, "[!.]*.parquet")
         return os.path.join(base, f"year={int(year)}.parquet")
 
     # -----------------------------
@@ -800,7 +800,7 @@ class StockStore:
 
         # If no date range is provided, fall back to glob (can be large).
         if not start_date or not end_date:
-            glob_path = os.path.join(self.parquet_dir, dataset, "**", "*.parquet")
+            glob_path = os.path.join(self.parquet_dir, dataset, "**", "[!.]*.parquet")
             return "read_parquet(?, union_by_name=true)", [glob_path]
 
         # Prefer pruning by exact partitions, using trade calendar.
@@ -811,12 +811,12 @@ class StockStore:
             if not files:
                 # Nothing available locally in this range.
                 # Return a relation that yields 0 rows with correct schema (best-effort):
-                glob_path = os.path.join(self.parquet_dir, dataset, "**", "*.parquet")
+                glob_path = os.path.join(self.parquet_dir, dataset, "**", "[!.]*.parquet")
                 return "read_parquet(?, union_by_name=true)", [glob_path]
             # DuckDB SQL can accept a VARCHAR[] for read_parquet.
             return "read_parquet(?, union_by_name=true)", [files]
         except Exception:
-            glob_path = os.path.join(self.parquet_dir, dataset, "**", "*.parquet")
+            glob_path = os.path.join(self.parquet_dir, dataset, "**", "[!.]*.parquet")
             return "read_parquet(?, union_by_name=true)", [glob_path]
 
     def _read_trade_date_dataset(
