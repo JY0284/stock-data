@@ -660,7 +660,7 @@ class StockStore:
                 sql += f" WHERE {w_sql}"
                 p.extend(w_params)
             if order_by:
-                sql += f" ORDER BY {_quote_ident(order_by)}"
+                sql += f" ORDER BY {_parse_order_by(order_by)}"
             if limit is not None:
                 sql += f" LIMIT {int(limit)}"
             con = self._connect()
@@ -901,6 +901,20 @@ def _quote_ident(name: str) -> str:
     return f'"{n}"'
 
 
+def _parse_order_by(order_by: str) -> str:
+    """Parse order_by string to handle 'column_name desc' or 'column_name asc' patterns."""
+    parts = order_by.strip().split()
+    if len(parts) == 1:
+        return _quote_ident(parts[0])
+    elif len(parts) == 2:
+        col, direction = parts
+        direction_upper = direction.upper()
+        if direction_upper in ("ASC", "DESC"):
+            return f"{_quote_ident(col)} {direction_upper}"
+    # Fallback: quote as-is (original behavior)
+    return _quote_ident(order_by)
+
+
 def _where_sql(where: dict[str, Any]) -> tuple[str, list[Any]]:
     parts: list[str] = []
     params: list[Any] = []
@@ -950,8 +964,15 @@ def _apply_columns_limit_order(
     if columns:
         cols = [c for c in columns if c in out.columns]
         out = out.loc[:, cols]
-    if order_by and order_by in out.columns:
-        out = out.sort_values(order_by)
+    if order_by:
+        # Handle "column desc" or "column asc" patterns
+        parts = order_by.strip().split()
+        col = parts[0]
+        ascending = True
+        if len(parts) == 2 and parts[1].upper() == "DESC":
+            ascending = False
+        if col in out.columns:
+            out = out.sort_values(col, ascending=ascending)
     if limit is not None:
         out = out.head(int(limit))
     return out
