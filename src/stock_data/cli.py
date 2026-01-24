@@ -39,6 +39,12 @@ def _build_parser() -> argparse.ArgumentParser:
     datasets = sub.add_parser("datasets", parents=[common], help="List supported datasets and descriptions")
     datasets.add_argument("--lang", default="both", choices=["both", "en", "zh"], help="Output language (default: both)")
 
+    serve = sub.add_parser("serve", parents=[common], help="Start a read-only HTTP service for the local store")
+    serve.add_argument("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)")
+    serve.add_argument("--port", type=int, default=8000, help="Bind port (default: 8000)")
+    serve.add_argument("--http-workers", type=int, default=1, help="Uvicorn workers (default: 1)")
+    serve.add_argument("--log-level", default=None, help="Override uvicorn log level (default: inherit)")
+
     p.add_argument(
         "--token",
         default=None,

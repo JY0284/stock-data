@@ -68,6 +68,33 @@ def run_command(args, *, token: str) -> int:
         print_datasets(lang=args.lang)
         return 0
 
+    if args.cmd == "serve":
+        # Configure the web service via env vars so uvicorn can import a global app.
+        # This enables multi-worker mode.
+        os.environ["STOCK_DATA_STORE_DIR"] = cfg.store_dir
+
+        # Prefer import-string when workers > 1 (uvicorn requirement).
+        import uvicorn
+
+        log_level = (args.log_level or os.environ.get("STOCK_DATA_WEB_LOG_LEVEL") or "info").lower()
+        workers = int(getattr(args, "http_workers", 1) or 1)
+
+        if workers > 1:
+            uvicorn.run(
+                "stock_data.web_service:app",
+                host=args.host,
+                port=int(args.port),
+                workers=workers,
+                log_level=log_level,
+            )
+        else:
+            from stock_data.web_service import create_app
+
+            app = create_app()
+            uvicorn.run(app, host=args.host, port=int(args.port), log_level=log_level)
+
+        return 0
+
     if args.cmd == "validate":
         from stock_data.validation import validate
 
