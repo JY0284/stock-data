@@ -1,0 +1,25 @@
+[project]
+name = "stock_data"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "ipykernel>=7.1.0",
+    "duckdb>=1.1.0",
+    "pandas>=2.2.0",
+    "pyarrow>=16.0.0",
+    "rich>=13.7.0",
+    "tenacity>=9.0.0",
+    "tushare>=1.4.24",
+]
+
+[project.scripts]
+stock-data = "stock_data.cli:main"
+
+[build-system]
+requires = ["hatchling>=1.24.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/stock_data"]

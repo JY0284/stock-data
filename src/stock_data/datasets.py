@@ -1,0 +1,153 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class DatasetInfo:
+    name: str
+    category: str  # e.g. basic / market
+    partitioning: str  # e.g. trade_date / snapshot
+    source: str  # tushare endpoint / concept
+    desc_en: str
+    desc_zh: str
+
+
+DATASETS: list[DatasetInfo] = [
+    DatasetInfo(
+        name="stock_basic",
+        category="basic",
+        partitioning="snapshot",
+        source="tushare: stock_basic",
+        desc_en="Listed security master data (stock list/universe; one row per ts_code with name/industry/list status/dates, etc.).",
+        desc_zh="股票列表/证券基础信息（每个 ts_code 一行；名称/行业/上市状态/上市退市日期等）。",
+    ),
+    DatasetInfo(
+        name="trade_cal",
+        category="basic",
+        partitioning="snapshot",
+        source="tushare: trade_cal",
+        desc_en="Exchange trading calendar (open/close days), used to generate correct trading-date partitions.",
+        desc_zh="交易所交易日历（开市/休市），用于生成正确的交易日分区。",
+    ),
+    DatasetInfo(
+        name="stock_company",
+        category="basic",
+        partitioning="snapshot",
+        source="tushare: stock_company",
+        desc_en="Listed company profile per ts_code (management, location, website, business scope, etc.).",
+        desc_zh="上市公司基本信息（管理层、地区、官网、主营业务/经营范围等）。",
+    ),
+    DatasetInfo(
+        name="new_share",
+        category="basic",
+        partitioning="window (year)",
+        source="tushare: new_share",
+        desc_en="IPO/new listing information (stored as year windows).",
+        desc_zh="IPO 新股列表/新股发行信息（按年窗口存储）。",
+    ),
+    DatasetInfo(
+        name="namechange",
+        category="basic",
+        partitioning="window (year)",
+        source="tushare: namechange",
+        desc_en="Security historical names / name change events (stored as year windows).",
+        desc_zh="股票曾用名/更名事件（按年窗口存储）。",
+    ),
+    DatasetInfo(
+        name="daily",
+        category="market",
+        partitioning="trade_date",
+        source="tushare: daily",
+        desc_en="Daily OHLCV bars (per ts_code) for a given trading day.",
+        desc_zh="日线行情（指定交易日，全市场股票日线 OHLCV）。",
+    ),
+    DatasetInfo(
+        name="adj_factor",
+        category="market",
+        partitioning="trade_date",
+        source="tushare: adj_factor",
+        desc_en="Adjustment factors per ts_code and trade_date (used for qfq/hfq price adjustment).",
+        desc_zh="复权因子（ts_code + trade_date，用于前/后复权计算）。",
+    ),
+    DatasetInfo(
+        name="daily_basic",
+        category="market",
+        partitioning="trade_date",
+        source="tushare: daily_basic",
+        desc_en="Daily market indicators per ts_code and trade_date (turnover, valuation, shares, market cap, etc.).",
+        desc_zh="每日行情指标（换手率、估值指标、股本、市值等）。",
+    ),
+    DatasetInfo(
+        name="weekly",
+        category="market",
+        partitioning="trade_date (week-end)",
+        source="tushare: weekly",
+        desc_en="Weekly bars keyed by the week-end trading date.",
+        desc_zh="周线行情（以当周最后一个交易日作为 trade_date）。",
+    ),
+    DatasetInfo(
+        name="monthly",
+        category="market",
+        partitioning="trade_date (month-end)",
+        source="tushare: monthly",
+        desc_en="Monthly bars keyed by the month-end trading date.",
+        desc_zh="月线行情（以当月最后一个交易日作为 trade_date）。",
+    ),
+    DatasetInfo(
+        name="suspend_d",
+        category="market",
+        partitioning="trade_date",
+        source="tushare: suspend_d",
+        desc_en="Suspension/resumption events on a trade date (we fetch both suspend types and combine).",
+        desc_zh="停复牌信息（按交易日；会合并不同 suspend_type 的结果）。",
+    ),
+    DatasetInfo(
+        name="stk_limit",
+        category="market",
+        partitioning="trade_date",
+        source="tushare: stk_limit",
+        desc_en="Daily limit-up/limit-down prices (price bands) per ts_code and trade_date.",
+        desc_zh="涨跌停价格（按交易日；包含涨停价/跌停价）。",
+    ),
+]
+
+
+ALL_DATASET_NAMES: list[str] = [d.name for d in DATASETS]
+
+
+def dataset_info_map() -> dict[str, DatasetInfo]:
+    return {d.name: d for d in DATASETS}
+
+
+def parse_datasets(datasets: str) -> list[str]:
+    if datasets.strip().lower() in {"all", "*"}:
+        return list(ALL_DATASET_NAMES)
+    return [d.strip() for d in datasets.split(",") if d.strip()]
+
+
+def print_datasets(*, lang: str = "both") -> None:
+    lang = (lang or "both").lower()
+    if lang not in {"both", "en", "zh"}:
+        raise ValueError("lang must be one of: both, en, zh")
+
+    if lang == "both":
+        header = f"{'dataset':<14} {'category':<8} {'partitioning':<18} {'description (EN)':<52} description (中文)"
+    elif lang == "en":
+        header = f"{'dataset':<14} {'category':<8} {'partitioning':<18} description"
+    else:
+        header = f"{'dataset':<14} {'category':<8} {'partitioning':<18} 说明"
+
+    print(header)
+    print("-" * len(header))
+
+    for d in DATASETS:
+        if lang == "both":
+            print(
+                f"{d.name:<14} {d.category:<8} {d.partitioning:<18} "
+                f"{d.desc_en:<52} {d.desc_zh}"
+            )
+        elif lang == "en":
+            print(f"{d.name:<14} {d.category:<8} {d.partitioning:<18} {d.desc_en}")
+        else:
+            print(f"{d.name:<14} {d.category:<8} {d.partitioning:<18} {d.desc_zh}")
