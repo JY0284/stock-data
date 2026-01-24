@@ -237,7 +237,30 @@ class StockStore:
         columns: list[str] | None = None,
         cache: bool = True,
     ) -> pd.DataFrame:
-        df = self.read("stock_basic", columns=columns, cache=cache)
+        # NOTE: if `columns` is provided, we still need the filter columns
+        # (list_status/exchange/market/is_hs/industry/area) present to apply filters.
+        # Otherwise filtering will KeyError. We load a superset, then project back.
+        requested_cols = columns[:] if columns else None
+        filter_cols: list[str] = []
+        if list_status is not None:
+            filter_cols.append("list_status")
+        if exchange is not None:
+            filter_cols.append("exchange")
+        if market is not None:
+            filter_cols.append("market")
+        if is_hs is not None:
+            filter_cols.append("is_hs")
+        if industry is not None:
+            filter_cols.append("industry")
+        if area is not None:
+            filter_cols.append("area")
+
+        if requested_cols is not None:
+            cols = list(dict.fromkeys([*requested_cols, *filter_cols]))
+        else:
+            cols = None
+
+        df = self.read("stock_basic", columns=cols, cache=cache)
         if list_status is not None:
             df = df.loc[df["list_status"] == list_status]
         if exchange is not None:
@@ -250,6 +273,9 @@ class StockStore:
             df = df.loc[df["industry"] == industry]
         if area is not None:
             df = df.loc[df["area"] == area]
+        if requested_cols is not None:
+            keep = [c for c in requested_cols if c in df.columns]
+            df = df.loc[:, keep]
         return df.reset_index(drop=True)
 
     # -----------------------------
