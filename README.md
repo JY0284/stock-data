@@ -95,11 +95,55 @@ stock-data datasets --lang en
 stock-data datasets --lang zh
 ```
 
+## Python API (Recommended)
+
+The `StockStore` class provides a clean, high-level API for querying local data. It handles DuckDB connections, Parquet paths, and caching automatically.
+
+```python
+from stock_data.store import open_store
+
+# Open the store (caching enabled by default)
+store = open_store("store")
+
+# Resolve symbol to ts_code
+resolved = store.resolve("300888")
+# -> ResolvedSymbol(symbol='300888', ts_code='300888.SZ', list_date='20200917')
+
+# Get daily prices
+df = store.daily("300888.SZ", start_date="20240101", end_date="20240131")
+
+# Get adjusted prices (qfq = forward-adjusted)
+df_adj = store.daily_adj("300888.SZ", start_date="20240101", how="qfq")
+
+# Calendar helpers
+trading_days = store.trading_days("20240101", "20240131")
+is_open = store.is_trading_day("20240115")
+
+# Universe / stock list
+universe = store.universe(list_status="L", market="创业板")
+
+# IPO info
+ipo = store.new_share(year=2024)
+
+# Generic query (escape hatch)
+df = store.read("daily_basic", start_date="20240101", end_date="20240105")
+```
+
+Features:
+- **Partition pruning**: Date-range queries only read relevant Parquet files.
+- **Caching**: Repeated queries are served from memory (~1GB budget by default).
+- **No views required**: Works even if DuckDB views are missing.
+
+For a full demo, run:
+```bash
+python demos/use_store_api.py 300888 store
+```
+
 ## Use the Data (DataFrame)
 
-There are two common ways to consume the stored datasets as pandas DataFrames.
+For lower-level access, you can query DuckDB views or Parquet files directly.
 
-### Option A: DuckDB -> pandas (recommended)
+### Option A: DuckDB -> pandas
 
 DuckDB reads the partitioned Parquet efficiently and can push down filters (dates, columns, symbols).
 

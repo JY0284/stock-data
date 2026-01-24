@@ -96,6 +96,50 @@ stock-data datasets --lang en
 stock-data datasets --lang zh
 ```
 
+## Python API（推荐）
+
+`StockStore` 提供了更易用的 Python 访问层：屏蔽 DuckDB 连接、Parquet 路径、以及常见查询的细节，并内置缓存与分区裁剪（适合频繁的小查询/后续接入 agent tools）。
+
+```python
+from stock_data.store import open_store
+
+# 打开本地 store（默认开启缓存）
+store = open_store("store")
+
+# 解析 symbol -> ts_code
+resolved = store.resolve("300888")  # -> 300888.SZ
+
+# 读取日线
+df = store.daily("300888.SZ", start_date="20240101", end_date="20240131")
+
+# 复权价格（qfq=前复权）
+df_adj = store.daily_adj("300888.SZ", start_date="20240101", how="qfq")
+
+# 交易日历
+days = store.trading_days("20240101", "20240131")
+is_open = store.is_trading_day("20240115")
+
+# 股票列表 / universe
+universe = store.universe(list_status="L", market="创业板")
+
+# 新股（IPO）信息
+ipo = store.new_share(year=2024)
+
+# 通用读取（兜底入口）
+df = store.read("daily_basic", start_date="20240101", end_date="20240105")
+```
+
+特性：
+- **分区裁剪**：按日期范围只读相关 Parquet 分区（避免全量 glob）。
+- **缓存**：重复查询走内存缓存（默认 ~1GB）。
+- **不依赖视图**：即使 DuckDB 视图不存在，也可以直接读 Parquet。
+
+快速 Demo：
+
+```bash
+python demos/use_store_api.py 300888 store
+```
+
 ## 数据读取
 
 ### 方式 A：DuckDB → pandas（推荐）
@@ -154,7 +198,13 @@ df = pd.read_parquet("store/parquet/daily/year=2023/month=12/trade_date=20231226
 
 ## Demo：单只股票拉全量数据
 
-为了让你快速上手读取本地数据，这里提供了一个 demo：输入股票代码（例如 `300888`），先在 `stock_basic` 里解析到 `ts_code`，然后把我们已有的数据集里与该股票相关的记录都打印出来（包含日线、因子、每日指标、周/月线等）。
+为了让你快速上手读取本地数据，这里提供了一个 demo：输入股票代码（例如 `300888`）或 `ts_code`（例如 `000001.SZ`），用 `StockStore` API 展示常见读取方式（包含解析代码、日线、复权、日历、universe 等）。
+
+```bash
+python demos/use_store_api.py 300888 store
+```
+
+如果你想看更“底层”的用法（直接 DuckDB/SQL 读多数据集并打印全量），仍可以使用旧的 demo：
 
 ```bash
 python demos/print_stock_300888.py 300888 store
