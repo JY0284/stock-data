@@ -140,20 +140,30 @@ def sync_store(
             continue
 
         # Decide if we need download.
+        # Default behavior is intentionally *mtime-insensitive* because mtimes often differ
+        # across machines/filesystems even when content is identical.
         if dest.exists() and dest.is_file():
             st = dest.stat()
-            same_size = (size is None) or (int(size) == int(st.st_size))
-            same_mtime = (mtime_ns is None) or (int(mtime_ns) == int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1e9))))
-            if same_size and same_mtime and not verify_hash:
-                skipped += 1
-                continue
+
             if verify_hash and sha256:
                 try:
                     if _sha256_file(dest) == sha256:
                         skipped += 1
                         continue
                 except Exception:
+                    # If hashing fails, fall back to download.
                     pass
+            else:
+                if size is not None and int(size) == int(st.st_size):
+                    skipped += 1
+                    continue
+
+                # Fallback only when remote didn't provide size.
+                if mtime_ns is not None:
+                    local_mtime_ns = int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1e9)))
+                    if int(mtime_ns) == local_mtime_ns:
+                        skipped += 1
+                        continue
 
         to_download.append({"rel": rel, "size": size, "mtime_ns": mtime_ns, "sha256": sha256})
 

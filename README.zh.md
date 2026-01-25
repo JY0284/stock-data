@@ -147,7 +147,8 @@ stock-data sync --store store --remote http://stock-data.example.com
 
 说明：
 - 同步范围只包含 `store/duckdb/` 与 `store/parquet/` 两个子目录。
-- `--hash` 会对每个文件做 sha256 校验（更慢但更安全）。
+- 默认按文件大小判断是否需要下载（更快，也能避免不同机器 mtime 不一致导致的全量重复下载）。
+- `--hash` 会对每个文件做 sha256 校验（更慢但更严格/更安全）。
 - `--dry-run` 仅预览变化。
 - `--delete` 会删除“本地存在但远端不存在”的文件（危险操作，慎用）。
 

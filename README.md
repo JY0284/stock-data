@@ -146,7 +146,8 @@ stock-data sync --store store --remote http://stock-data.example.com
 
 Notes:
 - This sync only reads/writes files under `store/duckdb/` and `store/parquet/`.
-- Use `--hash` for sha256 verification (slower, safer).
+- By default it skips files based on file size (fast; robust across machines with different mtimes).
+- Use `--hash` for sha256 verification (slower, strictest).
 - Use `--dry-run` to preview changes.
 - `--delete` removes local files not present on remote (dangerous; use with care).
 
