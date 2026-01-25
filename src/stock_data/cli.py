@@ -53,8 +53,13 @@ def _build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--log-level", default=None, help="Override uvicorn log level (default: inherit)")
 
     sync = sub.add_parser("sync", parents=[common], help="Sync local store from a remote stock-data service")
-    sync.add_argument("--remote-host", required=True, help="Remote service host (IP or DNS)")
-    sync.add_argument("--remote-port", type=int, required=True, help="Remote service port")
+    sync.add_argument(
+        "--remote",
+        default=None,
+        help="Remote base URL, e.g. http://1.2.3.4:8000 (overrides --remote-host/--remote-port)",
+    )
+    sync.add_argument("--remote-host", default=None, help="Remote service host (IP or DNS)")
+    sync.add_argument("--remote-port", type=int, default=None, help="Remote service port")
     sync.add_argument("--remote-scheme", default="http", choices=["http", "https"], help="Remote scheme")
     sync.add_argument(
         "--delete",

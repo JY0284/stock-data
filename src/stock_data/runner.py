@@ -105,8 +105,23 @@ def run_command(args, *, token: str) -> int:
 
     if args.cmd == "sync":
         from stock_data.sync_client import sync_store
+        from urllib.parse import urlparse
 
-        base_url = f"{args.remote_scheme}://{args.remote_host}:{int(args.remote_port)}"
+        remote = (getattr(args, "remote", None) or "").strip()
+        if remote:
+            # Accept either full URL (recommended) or host:port.
+            if "://" not in remote:
+                remote = f"http://{remote}"
+            u = urlparse(remote)
+            if u.scheme not in {"http", "https"}:
+                raise ValueError("--remote must be an http(s) URL, e.g. http://1.2.3.4:8000")
+            if not u.hostname or not u.port:
+                raise ValueError("--remote must include host and port, e.g. http://1.2.3.4:8000")
+            base_url = f"{u.scheme}://{u.hostname}:{int(u.port)}"
+        else:
+            if not getattr(args, "remote_host", None) or not getattr(args, "remote_port", None):
+                raise ValueError("Missing remote: use --remote http://host:port or pass --remote-host/--remote-port")
+            base_url = f"{args.remote_scheme}://{args.remote_host}:{int(args.remote_port)}"
         res = sync_store(
             base_url=base_url,
             store_dir=cfg.store_dir,

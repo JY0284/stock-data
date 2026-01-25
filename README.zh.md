@@ -136,7 +136,7 @@ stock-data serve --store store --host 0.0.0.0 --port 8000
 在 **本地** 机器（客户端）执行同步：
 
 ```bash
-stock-data sync --store store --remote-host 1.2.3.4 --remote-port 8000
+stock-data sync --store store --remote http://1.2.3.4:8000
 ```
 
 说明：
