@@ -5,10 +5,12 @@ import os
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+import hashlib
+from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import FastAPI, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 
 from stock_data.datasets import DATASETS, ALL_DATASET_NAMES, dataset_info_map
 from stock_data.store import StockStore, open_store
@@ -408,6 +410,78 @@ def create_app(*, settings: WebSettings | None = None) -> FastAPI:
             return Response(content=df.to_csv(index=False), media_type="text/csv; charset=utf-8")
 
         return {"ts_code": ts_code, "rows": int(len(df)), "data": df.to_dict(orient="records")}
+
+    def _store_root() -> Path:
+        # Resolve to avoid traversal tricks.
+        return Path(settings.store_dir).expanduser().resolve()
+
+    def _safe_store_file(rel_posix_path: str) -> Path:
+        rel = (rel_posix_path or "").strip().lstrip("/")
+        if not rel:
+            raise ValueError("path is required")
+
+        # Only allow syncing these subtrees.
+        if not (rel == "duckdb" or rel.startswith("duckdb/") or rel == "parquet" or rel.startswith("parquet/")):
+            raise ValueError("path must be under duckdb/ or parquet/")
+
+        root = _store_root()
+        p = (root / Path(rel)).resolve()
+        try:
+            p.relative_to(root)
+        except Exception as e:  # noqa: BLE001
+            raise ValueError("invalid path") from e
+        if not p.is_file():
+            raise FileNotFoundError(rel)
+        return p
+
+    @app.get("/sync/manifest")
+    async def sync_manifest(
+        hash: bool = Query(False, description="Include sha256 for each file (slower)"),
+    ):
+        root = _store_root()
+        files: list[dict[str, Any]] = []
+
+        def _walk(base_rel: str) -> None:
+            base = (root / base_rel)
+            if not base.exists():
+                return
+            for dirpath, _dirnames, filenames in os.walk(base):
+                for fn in filenames:
+                    if fn == ".DS_Store" or fn.startswith("._"):
+                        continue
+                    p = Path(dirpath) / fn
+                    try:
+                        st = p.stat()
+                    except FileNotFoundError:
+                        continue
+                    rel = p.resolve().relative_to(root).as_posix()
+                    item: dict[str, Any] = {
+                        "path": rel,
+                        "size": int(st.st_size),
+                        "mtime_ns": int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1e9))),
+                    }
+                    if hash:
+                        h = hashlib.sha256()
+                        with p.open("rb") as f:
+                            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                                h.update(chunk)
+                        item["sha256"] = h.hexdigest()
+                    files.append(item)
+
+        _walk("duckdb")
+        _walk("parquet")
+
+        return {
+            "store_dir": str(root),
+            "generated_at": int(time.time()),
+            "files": files,
+            "count": len(files),
+        }
+
+    @app.get("/sync/file")
+    async def sync_file(path: str = Query(..., description="Relative file path under duckdb/ or parquet/")):
+        p = _safe_store_file(path)
+        return FileResponse(path=str(p), media_type="application/octet-stream")
 
     return app
 

@@ -122,6 +122,28 @@ stock-data datasets --lang en
 stock-data datasets --lang zh
 ```
 
+### 7. Sync Store from a Remote Service
+
+If you already have a machine that has a complete/updated `store/`, you can run the HTTP service there and sync your local store from it.
+
+On the **remote** machine (server):
+
+```bash
+stock-data serve --store store --host 0.0.0.0 --port 8000
+```
+
+On the **local** machine (client):
+
+```bash
+stock-data sync --store store --remote-host 1.2.3.4 --remote-port 8000
+```
+
+Notes:
+- This sync only reads/writes files under `store/duckdb/` and `store/parquet/`.
+- Use `--hash` for sha256 verification (slower, safer).
+- Use `--dry-run` to preview changes.
+- `--delete` removes local files not present on remote (dangerous; use with care).
+
 ## Python API (Recommended)
 
 The `StockStore` class provides a clean, high-level API for querying local data. It handles DuckDB connections, Parquet paths, and caching automatically.

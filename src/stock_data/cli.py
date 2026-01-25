@@ -52,6 +52,32 @@ def _build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--http-workers", type=int, default=1, help="Uvicorn workers (default: 1)")
     serve.add_argument("--log-level", default=None, help="Override uvicorn log level (default: inherit)")
 
+    sync = sub.add_parser("sync", parents=[common], help="Sync local store from a remote stock-data service")
+    sync.add_argument("--remote-host", required=True, help="Remote service host (IP or DNS)")
+    sync.add_argument("--remote-port", type=int, required=True, help="Remote service port")
+    sync.add_argument("--remote-scheme", default="http", choices=["http", "https"], help="Remote scheme")
+    sync.add_argument(
+        "--delete",
+        action="store_true",
+        help="Delete local files that do not exist on remote (DANGEROUS)",
+    )
+    sync.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Only print what would be changed",
+    )
+    sync.add_argument(
+        "--hash",
+        action="store_true",
+        help="Verify sha256 for each file (slower, safer)",
+    )
+    sync.add_argument(
+        "--concurrency",
+        type=int,
+        default=4,
+        help="Parallel download workers (default: 4)",
+    )
+
     p.add_argument(
         "--token",
         default=None,

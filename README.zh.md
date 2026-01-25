@@ -123,6 +123,28 @@ stock-data datasets --lang en
 stock-data datasets --lang zh
 ```
 
+### 7）从远端服务同步本地 store（Sync）
+
+如果你有一台机器（例如服务器）上的 `store/` 是完整且最新的，可以在那台机器上启动 HTTP 服务，然后在本机把 `store/` 同步过来。
+
+在 **远端** 机器（服务端）启动：
+
+```bash
+stock-data serve --store store --host 0.0.0.0 --port 8000
+```
+
+在 **本地** 机器（客户端）执行同步：
+
+```bash
+stock-data sync --store store --remote-host 1.2.3.4 --remote-port 8000
+```
+
+说明：
+- 同步范围只包含 `store/duckdb/` 与 `store/parquet/` 两个子目录。
+- `--hash` 会对每个文件做 sha256 校验（更慢但更安全）。
+- `--dry-run` 仅预览变化。
+- `--delete` 会删除“本地存在但远端不存在”的文件（危险操作，慎用）。
+
 ## Python API（推荐）
 
 `StockStore` 提供了更易用的 Python 访问层：屏蔽 DuckDB 连接、Parquet 路径、以及常见查询的细节，并内置缓存与分区裁剪（适合频繁的小查询/后续接入 agent tools）。

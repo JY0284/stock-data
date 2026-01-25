@@ -103,6 +103,28 @@ def run_command(args, *, token: str) -> int:
 
         return 0
 
+    if args.cmd == "sync":
+        from stock_data.sync_client import sync_store
+
+        base_url = f"{args.remote_scheme}://{args.remote_host}:{int(args.remote_port)}"
+        res = sync_store(
+            base_url=base_url,
+            store_dir=cfg.store_dir,
+            delete=bool(getattr(args, "delete", False)),
+            dry_run=bool(getattr(args, "dry_run", False)),
+            verify_hash=bool(getattr(args, "hash", False)),
+            concurrency=int(getattr(args, "concurrency", 4) or 4),
+        )
+
+        if res.errors:
+            print(f"sync: downloaded={res.downloaded} skipped={res.skipped} deleted={res.deleted} errors={len(res.errors)}")
+            for e in res.errors[:20]:
+                print(f"- {e}")
+            return 1
+
+        print(f"sync: downloaded={res.downloaded} skipped={res.skipped} deleted={res.deleted}")
+        return 0
+
     if args.cmd == "validate":
         from stock_data.validation import validate
 
