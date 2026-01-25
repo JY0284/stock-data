@@ -473,6 +473,152 @@ Columns:
 - `ann_date`
 - `change_reason`
 
+### Finance (report-period partitioned)
+
+Files live at `store/parquet/<dataset>/year=YYYY/quarter=Q/end_date=YYYYMMDD.parquet`.
+
+Financial datasets are partitioned by **report period** (`end_date`), not trading date. For example:
+- Q1 2024: `end_date=20240331`
+- Q2 2024: `end_date=20240630`
+- Q3 2024: `end_date=20240930`
+- Annual 2024: `end_date=20241231`
+
+**Note**: These datasets require **5000 积分 (points)** for VIP endpoints that fetch full-market quarterly data.
+
+#### `income` (tushare: `income_vip`)
+
+Income statement (利润表). Key columns include:
+- `ts_code`, `end_date`, `ann_date`, `f_ann_date`
+- `report_type`, `comp_type`, `end_type`
+- `basic_eps`, `diluted_eps`: Earnings per share
+- `total_revenue`, `revenue`: Revenue metrics
+- `total_cogs`, `oper_cost`: Cost metrics
+- `operate_profit`, `total_profit`, `n_income`: Profit metrics
+- And many more financial line items...
+
+#### `balancesheet` (tushare: `balancesheet_vip`)
+
+Balance sheet (资产负债表). Key columns include:
+- `ts_code`, `end_date`, `ann_date`, `f_ann_date`
+- `report_type`, `comp_type`, `end_type`
+- `total_assets`, `total_cur_assets`, `total_nca`: Asset metrics
+- `total_liab`, `total_cur_liab`, `total_ncl`: Liability metrics
+- `total_hldr_eqy_exc_min_int`: Shareholder equity
+- And many more balance sheet line items...
+
+#### `cashflow` (tushare: `cashflow_vip`)
+
+Cash flow statement (现金流量表). Key columns include:
+- `ts_code`, `end_date`, `ann_date`, `f_ann_date`
+- `report_type`, `comp_type`, `end_type`
+- `n_cashflow_act`: Net cash flow from operating activities
+- `n_cashflow_inv_act`: Net cash flow from investing activities
+- `n_cashflow_fnc_act`: Net cash flow from financing activities
+- `c_cash_equ_end_period`: Cash and equivalents at period end
+- And many more cash flow line items...
+
+#### `forecast` (tushare: `forecast_vip`)
+
+Earnings forecast (业绩预告). Key columns:
+- `ts_code`, `ann_date`, `end_date`
+- `type`: Forecast type (预增/预减/扭亏/首亏/续亏/续盈/略增/略减)
+- `p_change_min`, `p_change_max`: Profit change range (%)
+- `net_profit_min`, `net_profit_max`: Net profit range (万元)
+- `last_parent_net`: Prior year net profit
+- `summary`, `change_reason`: Forecast summary and reason
+
+#### `express` (tushare: `express_vip`)
+
+Earnings express (业绩快报). Key columns:
+- `ts_code`, `ann_date`, `end_date`
+- `revenue`, `operate_profit`, `total_profit`, `n_income`: Key financials
+- `total_assets`, `total_hldr_eqy_exc_min_int`: Balance sheet items
+- `diluted_eps`, `diluted_roe`, `bps`: Per-share metrics
+- `yoy_sales`, `yoy_op`, `yoy_tp`, `yoy_dedu_np`: YoY growth rates
+- `perf_summary`, `is_audit`, `remark`: Additional info
+
+#### `dividend` (tushare: `dividend`)
+
+Dividend distribution (分红送股). Key columns:
+- `ts_code`, `end_date`, `ann_date`, `div_proc`
+- `stk_div`, `stk_bo_rate`, `stk_co_rate`: Stock dividend metrics
+- `cash_div`, `cash_div_tax`: Cash dividend metrics
+- `record_date`, `ex_date`, `pay_date`: Important dates
+- `div_listdate`, `imp_ann_date`
+
+#### `fina_indicator` (tushare: `fina_indicator_vip`)
+
+Financial indicators (财务指标). Key columns:
+- `ts_code`, `end_date`, `ann_date`
+- `eps`, `dt_eps`, `total_revenue_ps`, `revenue_ps`: Per-share metrics
+- `capital_rese_ps`, `surplus_rese_ps`, `undist_profit_ps`
+- `extra_item`, `profit_dedt`, `gross_margin`: Profitability
+- `current_ratio`, `quick_ratio`, `cash_ratio`: Liquidity
+- `ar_turn`, `ca_turn`, `fa_turn`, `assets_turn`: Turnover
+- `roe`, `roa`, `roe_waa`, `roe_dt`: Return metrics
+- And many more financial ratios and indicators...
+
+#### `fina_audit` (tushare: `fina_audit`)
+
+Financial audit opinion (财务审计意见). Key columns:
+- `ts_code`, `ann_date`, `end_date`
+- `audit_result`: Audit result
+- `audit_fees`: Audit fees
+- `audit_agency`: Audit agency
+- `audit_sign`: Auditor signature
+
+#### `fina_mainbz` (tushare: `fina_mainbz_vip`)
+
+Main business composition (主营业务构成). Key columns:
+- `ts_code`, `end_date`, `bz_item`, `bz_sales`, `bz_profit`, `bz_cost`
+- `curr_type`, `update_flag`
+
+#### `disclosure_date` (tushare: `disclosure_date`)
+
+Financial report disclosure date schedule (财报披露日期表). This is a **snapshot** dataset (not partitioned by `end_date`).
+
+File: `store/parquet/disclosure_date/latest.parquet`
+
+Key columns:
+- `ts_code`, `ann_date`, `end_date`
+- `pre_date`, `actual_date`
+- `modify_date`
+
+### Using Finance Data
+
+**Python API**:
+
+```python
+from stock_data.store import open_store
+
+store = open_store("store")
+
+# Get income statement for a stock
+df = store.income("300888.SZ", start_period="20230101", end_period="20231231")
+
+# Get balance sheet
+df = store.balancesheet("300888.SZ", start_period="20230101", end_period="20231231")
+
+# Get cash flow statement
+df = store.cashflow("300888.SZ", start_period="20230101", end_period="20231231")
+
+# Get earnings forecast
+df = store.forecast("300888.SZ", start_period="20230101", end_period="20231231")
+
+# Get earnings express
+df = store.express("300888.SZ", start_period="20230101", end_period="20231231")
+```
+
+**SQL queries**:
+
+```bash
+# Check latest report period
+stock-data query --sql "SELECT MAX(end_date) FROM v_income"
+
+# Get income statement for a stock
+stock-data query --sql "SELECT ts_code, end_date, total_revenue, n_income FROM v_income WHERE ts_code='000001.SZ' ORDER BY end_date DESC LIMIT 5"
+```
+
 ## Development
 
 - `src/stock_data/`: Source code.

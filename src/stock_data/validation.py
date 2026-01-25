@@ -48,8 +48,27 @@ def validate(cfg: RunConfig, token: str | None = None) -> None:
             ).fetchall()
             if dup:
                 raise RuntimeError(f"Found duplicates in {view} (ts_code, trade_date). Example: {dup[0]}")
+        
+        # 1b) Finance dataset uniqueness checks (ts_code, end_date)
+        # Note: TuShare financial data can have duplicates due to amended reports, etc.
+        # We'll warn but not fail on this.
+        finance_views = ["v_income", "v_balancesheet", "v_cashflow", "v_forecast", "v_express", "v_dividend", "v_fina_indicator", "v_fina_audit", "v_fina_mainbz"]
+        for view in finance_views:
+            if not _view_exists(con, view):
+                continue
+            dup = con.execute(
+                f"""
+                SELECT ts_code, end_date, COUNT(*) AS c
+                FROM {view}
+                GROUP BY 1,2
+                HAVING c > 1
+                LIMIT 5;
+                """
+            ).fetchall()
+            if dup:
+                logger.warning(f"Found duplicates in {view} (ts_code, end_date). Example: {dup[0]} - this is normal for amended reports")
 
-        # 2) Recent-day sanity: daily rowcount should be “not tiny”
+        # 2) Recent-day sanity: daily rowcount should be "not tiny"
         if _view_exists(con, "v_daily"):
             logger.info("validate: recent-day sanity")
             row = con.execute("SELECT MAX(trade_date) FROM v_daily;").fetchone()
@@ -58,6 +77,16 @@ def validate(cfg: RunConfig, token: str | None = None) -> None:
                 cnt = con.execute("SELECT COUNT(*) FROM v_daily WHERE trade_date = ?;", [latest]).fetchone()[0]
                 if cnt < 1000:
                     raise RuntimeError(f"daily rowcount too small for {latest}: {cnt}")
+        
+        # 2b) Recent-quarter sanity for finance datasets
+        if _view_exists(con, "v_income"):
+            logger.info("validate: recent-quarter sanity")
+            row = con.execute("SELECT MAX(end_date) FROM v_income;").fetchone()
+            latest_period = row[0] if row else None
+            if latest_period:
+                cnt = con.execute("SELECT COUNT(*) FROM v_income WHERE end_date = ?;", [latest_period]).fetchone()[0]
+                if cnt < 1000:
+                    raise RuntimeError(f"income rowcount too small for period {latest_period}: {cnt}")
 
         # 3) Derived view exists when inputs exist
         if _view_exists(con, "v_daily") and _view_exists(con, "v_adj_factor"):

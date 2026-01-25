@@ -42,13 +42,16 @@ def _dir_size_bytes(path: str) -> int:
 
 
 _TRADE_DATE_RE = re.compile(r"trade_date=(\d{8})\.parquet$")
+_END_DATE_RE = re.compile(r"end_date=(\d{8})\.parquet$")
 
 
 def _parquet_file_count_and_date_range(dataset_dir: str) -> tuple[int, str | None, str | None]:
-    """Return (file_count, min_trade_date, max_trade_date) using filenames.
+    """Return (file_count, min_date, max_date) using filenames.
 
     This does not open Parquet files, so it works even while ingestion is running
     or if DuckDB is locked by another process.
+    
+    Recognizes both trade_date= and end_date= patterns.
     """
     file_count = 0
     min_d = None
@@ -61,7 +64,11 @@ def _parquet_file_count_and_date_range(dataset_dir: str) -> tuple[int, str | Non
             if not name.endswith(".parquet"):
                 continue
             file_count += 1
+            # Try trade_date pattern first
             m = _TRADE_DATE_RE.search(name)
+            if not m:
+                # Try end_date pattern (for finance datasets)
+                m = _END_DATE_RE.search(name)
             if not m:
                 continue
             d = m.group(1)

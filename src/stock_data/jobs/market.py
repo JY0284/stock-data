@@ -131,8 +131,8 @@ def run_market(
     date_map: dict[str, list[str]] = {}
 
     # Daily-ish datasets use every open trade date.
-    dailyish = {"daily", "adj_factor", "daily_basic", "stk_limit", "suspend_d"}
-    must_nonempty = {"daily", "adj_factor", "daily_basic", "weekly", "monthly"}
+    dailyish = {"daily", "adj_factor", "daily_basic", "stk_limit", "suspend_d", "index_daily", "etf_daily"}
+    must_nonempty = {"daily", "adj_factor", "daily_basic", "weekly", "monthly", "index_daily", "etf_daily"}
     if start_date is None:
         # incremental: start from the last completed partition per-dataset
         for ds in datasets:
@@ -260,6 +260,12 @@ def run_market(
                 df_s = client.query("suspend_d", suspend_type="S", trade_date=trade_date)
                 df_r = client.query("suspend_d", suspend_type="R", trade_date=trade_date)
                 df = pd.concat([df_s, df_r], ignore_index=True)
+            elif dataset == "index_daily":
+                df = client.query("index_daily", trade_date=trade_date)
+            elif dataset == "etf_daily":
+                # Tushare does not provide a separate "etf_daily" endpoint in `pro.query`.
+                # The commonly used daily bars endpoint for exchange-traded funds is `fund_daily`.
+                df = client.query("fund_daily", trade_date=trade_date)
             elif dataset == "weekly":
                 df = client.query("weekly", trade_date=trade_date)
             elif dataset == "monthly":

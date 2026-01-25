@@ -64,6 +64,36 @@ class ParquetWriter:
         final_path = os.path.join(ddir, f"trade_date={trade_date}.parquet")
         return self._write_atomic(df, final_path)
 
+    def write_end_date_partition(self, dataset: str, end_date: str, df) -> str:
+        """
+        Writes a report-period-partitioned file for financial data:
+          <base>/<dataset>/year=YYYY/quarter=Q/end_date=YYYYMMDD.parquet
+
+        We overwrite partitions idempotently (atomic replace).
+        """
+        # Some API calls may return None (or an empty frame without schema).
+        # DuckDB cannot read Parquet files with zero columns, so ensure at least
+        # a stable partition column exists.
+        try:
+            import pandas as pd
+
+            if df is None:
+                df = pd.DataFrame({"end_date": pd.Series(dtype="string")})
+            elif isinstance(df, pd.DataFrame) and df.empty and len(df.columns) == 0:
+                df = pd.DataFrame({"end_date": pd.Series(dtype="string")})
+        except Exception:
+            # If pandas isn't available for some reason, let _write_atomic raise
+            # a clearer error later.
+            pass
+
+        yyyy = end_date[:4]
+        mm = end_date[4:6]
+        q = (int(mm) - 1) // 3 + 1
+        ddir = os.path.join(self.dataset_dir(dataset), f"year={yyyy}", f"quarter={q}")
+        _ensure_dir(ddir)
+        final_path = os.path.join(ddir, f"end_date={end_date}.parquet")
+        return self._write_atomic(df, final_path)
+
     def _write_atomic(self, df, final_path: str) -> str:
         # Import lazily to keep CLI help lightweight.
         import pandas as pd

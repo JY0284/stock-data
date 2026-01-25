@@ -414,6 +414,152 @@ python demos/print_stock_300888.py 300888 store
 字段：
 - `ts_code`, `name`, `start_date`, `end_date`, `ann_date`, `change_reason`
 
+### 财务类（按报告期分区）
+
+文件路径：`store/parquet/<dataset>/year=YYYY/quarter=Q/end_date=YYYYMMDD.parquet`
+
+财务数据集按 **报告期**（`end_date`）分区，而不是交易日。例如：
+- 2024 年 Q1：`end_date=20240331`
+- 2024 年 Q2：`end_date=20240630`
+- 2024 年 Q3：`end_date=20240930`
+- 2024 年年报：`end_date=20241231`
+
+**注意**：这些数据集需要 **5000 积分**才能使用 VIP 接口获取全市场季度数据。
+
+#### `income`（tushare: `income_vip`）
+
+利润表。主要字段包括：
+- `ts_code`, `end_date`, `ann_date`, `f_ann_date`
+- `report_type`, `comp_type`, `end_type`
+- `basic_eps`, `diluted_eps`：每股收益
+- `total_revenue`, `revenue`：营业收入
+- `total_cogs`, `oper_cost`：成本
+- `operate_profit`, `total_profit`, `n_income`：利润指标
+- 以及更多财务科目...
+
+#### `balancesheet`（tushare: `balancesheet_vip`）
+
+资产负债表。主要字段包括：
+- `ts_code`, `end_date`, `ann_date`, `f_ann_date`
+- `report_type`, `comp_type`, `end_type`
+- `total_assets`, `total_cur_assets`, `total_nca`：资产指标
+- `total_liab`, `total_cur_liab`, `total_ncl`：负债指标
+- `total_hldr_eqy_exc_min_int`：股东权益
+- 以及更多资产负债表科目...
+
+#### `cashflow`（tushare: `cashflow_vip`）
+
+现金流量表。主要字段包括：
+- `ts_code`, `end_date`, `ann_date`, `f_ann_date`
+- `report_type`, `comp_type`, `end_type`
+- `n_cashflow_act`：经营活动现金流量净额
+- `n_cashflow_inv_act`：投资活动现金流量净额
+- `n_cashflow_fnc_act`：筹资活动现金流量净额
+- `c_cash_equ_end_period`：期末现金及现金等价物余额
+- 以及更多现金流量表科目...
+
+#### `forecast`（tushare: `forecast_vip`）
+
+业绩预告。主要字段：
+- `ts_code`, `ann_date`, `end_date`
+- `type`：预告类型（预增/预减/扭亏/首亏/续亏/续盈/略增/略减）
+- `p_change_min`, `p_change_max`：净利润变动幅度范围（%）
+- `net_profit_min`, `net_profit_max`：净利润范围（万元）
+- `last_parent_net`：上年同期净利润
+- `summary`, `change_reason`：预告摘要和变动原因
+
+#### `express`（tushare: `express_vip`）
+
+业绩快报。主要字段：
+- `ts_code`, `ann_date`, `end_date`
+- `revenue`, `operate_profit`, `total_profit`, `n_income`：关键财务数据
+- `total_assets`, `total_hldr_eqy_exc_min_int`：资产负债表项目
+- `diluted_eps`, `diluted_roe`, `bps`：每股指标
+- `yoy_sales`, `yoy_op`, `yoy_tp`, `yoy_dedu_np`：同比增长率
+- `perf_summary`, `is_audit`, `remark`：附加信息
+
+#### `dividend`（tushare: `dividend`）
+
+分红送股数据。主要字段：
+- `ts_code`, `end_date`, `ann_date`, `div_proc`
+- `stk_div`, `stk_bo_rate`, `stk_co_rate`：股票股利指标
+- `cash_div`, `cash_div_tax`：现金股利指标
+- `record_date`, `ex_date`, `pay_date`：重要日期
+- `div_listdate`, `imp_ann_date`
+
+#### `fina_indicator`（tushare: `fina_indicator_vip`）
+
+财务指标数据。主要字段：
+- `ts_code`, `end_date`, `ann_date`
+- `eps`, `dt_eps`, `total_revenue_ps`, `revenue_ps`：每股指标
+- `capital_rese_ps`, `surplus_rese_ps`, `undist_profit_ps`
+- `extra_item`, `profit_dedt`, `gross_margin`：盈利能力
+- `current_ratio`, `quick_ratio`, `cash_ratio`：流动性
+- `ar_turn`, `ca_turn`, `fa_turn`, `assets_turn`：周转率
+- `roe`, `roa`, `roe_waa`, `roe_dt`：回报率指标
+- 以及更多财务比率和指标...
+
+#### `fina_audit`（tushare: `fina_audit`）
+
+财务审计意见。主要字段：
+- `ts_code`, `ann_date`, `end_date`
+- `audit_result`：审计结果
+- `audit_fees`：审计费用
+- `audit_agency`：会计事务所
+- `audit_sign`：签字会计师
+
+#### `fina_mainbz`（tushare: `fina_mainbz_vip`）
+
+主营业务构成。主要字段：
+- `ts_code`, `end_date`, `bz_item`, `bz_sales`, `bz_profit`, `bz_cost`
+- `curr_type`, `update_flag`
+
+#### `disclosure_date`（tushare: `disclosure_date`）
+
+财报披露日期表。这是一个 **快照** 数据集（不按 `end_date` 分区）。
+
+文件：`store/parquet/disclosure_date/latest.parquet`
+
+主要字段：
+- `ts_code`, `ann_date`, `end_date`
+- `pre_date`, `actual_date`
+- `modify_date`
+
+### 使用财务数据
+
+**Python API**：
+
+```python
+from stock_data.store import open_store
+
+store = open_store("store")
+
+# 获取利润表
+df = store.income("300888.SZ", start_period="20230101", end_period="20231231")
+
+# 获取资产负债表
+df = store.balancesheet("300888.SZ", start_period="20230101", end_period="20231231")
+
+# 获取现金流量表
+df = store.cashflow("300888.SZ", start_period="20230101", end_period="20231231")
+
+# 获取业绩预告
+df = store.forecast("300888.SZ", start_period="20230101", end_period="20231231")
+
+# 获取业绩快报
+df = store.express("300888.SZ", start_period="20230101", end_period="20231231")
+```
+
+**SQL 查询**：
+
+```bash
+# 查看最新报告期
+stock-data query --sql "SELECT MAX(end_date) FROM v_income"
+
+# 获取某只股票的利润表
+stock-data query --sql "SELECT ts_code, end_date, total_revenue, n_income FROM v_income WHERE ts_code='000001.SZ' ORDER BY end_date DESC LIMIT 5"
+```
+
 ## 开发
 
 - 源码：`src/stock_data/`

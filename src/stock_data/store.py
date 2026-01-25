@@ -118,6 +118,19 @@ class StockStore:
 
     # Windowed-by-year datasets in this repo.
     _YEAR_WINDOW_DATASETS: set[str] = {"new_share", "namechange"}
+    
+    # Report-period (end_date) partitioned datasets (finance).
+    _END_DATE_DATASETS: set[str] = {
+        "income",
+        "balancesheet",
+        "cashflow",
+        "forecast",
+        "express",
+        "dividend",
+        "fina_indicator",
+        "fina_audit",
+        "fina_mainbz",
+    }
 
     def __init__(
         self,
@@ -626,6 +639,189 @@ class StockStore:
         return df
 
     # -----------------------------
+    # Public API: finance datasets
+    # -----------------------------
+    def income(
+        self,
+        ts_code: str,
+        *,
+        start_period: str | None = None,
+        end_period: str | None = None,
+        columns: list[str] | None = None,
+        cache: bool = True,
+    ) -> pd.DataFrame:
+        """Get income statement (利润表) data for a stock."""
+        return self._read_end_date_dataset(
+            "income",
+            ts_code=ts_code,
+            start_period=start_period,
+            end_period=end_period,
+            columns=columns,
+            order_by="end_date",
+            cache=cache,
+        )
+
+    def balancesheet(
+        self,
+        ts_code: str,
+        *,
+        start_period: str | None = None,
+        end_period: str | None = None,
+        columns: list[str] | None = None,
+        cache: bool = True,
+    ) -> pd.DataFrame:
+        """Get balance sheet (资产负债表) data for a stock."""
+        return self._read_end_date_dataset(
+            "balancesheet",
+            ts_code=ts_code,
+            start_period=start_period,
+            end_period=end_period,
+            columns=columns,
+            order_by="end_date",
+            cache=cache,
+        )
+
+    def cashflow(
+        self,
+        ts_code: str,
+        *,
+        start_period: str | None = None,
+        end_period: str | None = None,
+        columns: list[str] | None = None,
+        cache: bool = True,
+    ) -> pd.DataFrame:
+        """Get cash flow statement (现金流量表) data for a stock."""
+        return self._read_end_date_dataset(
+            "cashflow",
+            ts_code=ts_code,
+            start_period=start_period,
+            end_period=end_period,
+            columns=columns,
+            order_by="end_date",
+            cache=cache,
+        )
+
+    def forecast(
+        self,
+        ts_code: str,
+        *,
+        start_period: str | None = None,
+        end_period: str | None = None,
+        columns: list[str] | None = None,
+        cache: bool = True,
+    ) -> pd.DataFrame:
+        """Get earnings forecast (业绩预告) data for a stock."""
+        return self._read_end_date_dataset(
+            "forecast",
+            ts_code=ts_code,
+            start_period=start_period,
+            end_period=end_period,
+            columns=columns,
+            order_by="end_date",
+            cache=cache,
+        )
+
+    def express(
+        self,
+        ts_code: str,
+        *,
+        start_period: str | None = None,
+        end_period: str | None = None,
+        columns: list[str] | None = None,
+        cache: bool = True,
+    ) -> pd.DataFrame:
+        """Get earnings express (业绩快报) data for a stock."""
+        return self._read_end_date_dataset(
+            "express",
+            ts_code=ts_code,
+            start_period=start_period,
+            end_period=end_period,
+            columns=columns,
+            order_by="end_date",
+            cache=cache,
+        )
+
+    def dividend(
+        self,
+        ts_code: str,
+        *,
+        start_period: str | None = None,
+        end_period: str | None = None,
+        columns: list[str] | None = None,
+        cache: bool = True,
+    ) -> pd.DataFrame:
+        """Get dividend distribution (分红送股) data for a stock."""
+        return self._read_end_date_dataset(
+            "dividend",
+            ts_code=ts_code,
+            start_period=start_period,
+            end_period=end_period,
+            columns=columns,
+            order_by="end_date",
+            cache=cache,
+        )
+
+    def fina_indicator(
+        self,
+        ts_code: str,
+        *,
+        start_period: str | None = None,
+        end_period: str | None = None,
+        columns: list[str] | None = None,
+        cache: bool = True,
+    ) -> pd.DataFrame:
+        """Get financial indicators (财务指标) data for a stock."""
+        return self._read_end_date_dataset(
+            "fina_indicator",
+            ts_code=ts_code,
+            start_period=start_period,
+            end_period=end_period,
+            columns=columns,
+            order_by="end_date",
+            cache=cache,
+        )
+
+    def fina_audit(
+        self,
+        ts_code: str,
+        *,
+        start_period: str | None = None,
+        end_period: str | None = None,
+        columns: list[str] | None = None,
+        cache: bool = True,
+    ) -> pd.DataFrame:
+        """Get financial audit opinion (财务审计意见) data for a stock."""
+        return self._read_end_date_dataset(
+            "fina_audit",
+            ts_code=ts_code,
+            start_period=start_period,
+            end_period=end_period,
+            columns=columns,
+            order_by="end_date",
+            cache=cache,
+        )
+
+    def fina_mainbz(
+        self,
+        ts_code: str,
+        *,
+        start_period: str | None = None,
+        end_period: str | None = None,
+        columns: list[str] | None = None,
+        cache: bool = True,
+    ) -> pd.DataFrame:
+        """Get main business composition (主营业务构成) data for a stock."""
+        return self._read_end_date_dataset(
+            "fina_mainbz",
+            ts_code=ts_code,
+            start_period=start_period,
+            end_period=end_period,
+            columns=columns,
+            order_by="end_date",
+            cache=cache,
+        )
+
+    # -----------------------------
     # Escape hatches
     # -----------------------------
     def sql(self, query: str, params: list[Any] | None = None) -> pd.DataFrame:
@@ -685,6 +881,29 @@ class StockStore:
                 w_sql, w_params = _where_sql(where)
                 sql += f" WHERE {w_sql}"
                 p.extend(w_params)
+            if order_by:
+                sql += f" ORDER BY {_parse_order_by(order_by)}"
+            if limit is not None:
+                sql += f" LIMIT {int(limit)}"
+            con = self._connect()
+            df = con.execute(sql, p).fetchdf()
+        elif ds in self._END_DATE_DATASETS:
+            glob_path = os.path.join(self.parquet_dir, ds, "**", "[!.]*.parquet")
+            expr = "read_parquet(?, union_by_name=true)"
+            params = [glob_path]
+            sql_cols = "*" if not columns else ", ".join(_quote_ident(c) for c in columns)
+            sql = f"SELECT {sql_cols} FROM {expr}"
+            p = list(params)
+            if where:
+                w_sql, w_params = _where_sql(where)
+                sql += f" WHERE {w_sql}"
+                p.extend(w_params)
+            if start_date is not None:
+                sql += f" {'WHERE' if not where else 'AND'} end_date >= ?"
+                p.append(str(start_date))
+            if end_date is not None:
+                sql += f" {'WHERE' if not where and start_date is None else 'AND'} end_date <= ?"
+                p.append(str(end_date))
             if order_by:
                 sql += f" ORDER BY {_parse_order_by(order_by)}"
             if limit is not None:
@@ -855,6 +1074,55 @@ class StockStore:
         if end_date is not None:
             sql += " AND trade_date <= ?"
             p.append(str(end_date))
+        if order_by:
+            sql += f" ORDER BY {_quote_ident(order_by)}"
+
+        con = self._connect()
+        df = con.execute(sql, p).fetchdf()
+
+        if cache and self._cache_enabled:
+            self._cache.set(cache_key, df.copy(), size_bytes=_estimate_df_bytes(df))
+        return df
+
+    def _read_end_date_dataset(
+        self,
+        dataset: str,
+        *,
+        ts_code: str,
+        start_period: str | None,
+        end_period: str | None,
+        columns: list[str] | None,
+        order_by: str | None,
+        cache: bool,
+    ) -> pd.DataFrame:
+        """Read finance dataset partitioned by end_date (report period)."""
+        cache_key = self._cache_key(
+            f"ds:{dataset}",
+            ts_code=ts_code,
+            start_period=start_period,
+            end_period=end_period,
+            columns=columns,
+            order_by=order_by,
+        )
+        if cache and self._cache_enabled:
+            hit = self._cache.get(cache_key)
+            if hit is not None:
+                return hit.copy()
+
+        # For finance datasets, use glob pattern (simpler than pruning by quarters)
+        glob_path = os.path.join(self.parquet_dir, dataset, "**", "[!.]*.parquet")
+        expr = "read_parquet(?, union_by_name=true)"
+        params = [glob_path]
+        
+        sql_cols = "*" if not columns else ", ".join(_quote_ident(c) for c in columns)
+        sql = f"SELECT {sql_cols} FROM {expr} WHERE ts_code = ?"
+        p = [*params, ts_code]
+        if start_period is not None:
+            sql += " AND end_date >= ?"
+            p.append(str(start_period))
+        if end_period is not None:
+            sql += " AND end_date <= ?"
+            p.append(str(end_period))
         if order_by:
             sql += f" ORDER BY {_quote_ident(order_by)}"
 

@@ -29,10 +29,23 @@ def ensure_derived_views(catalog: DuckDBCatalog) -> None:
         "weekly",
         "monthly",
     ]
+    
+    # Finance datasets (report-period partitioned)
+    finance_datasets = [
+        "income",
+        "balancesheet",
+        "cashflow",
+        "forecast",
+        "express",
+        "dividend",
+        "fina_indicator",
+        "fina_audit",
+        "fina_mainbz",
+    ]
 
     exists: dict[str, bool] = {}
     globs: dict[str, str] = {}
-    for ds in base_datasets:
+    for ds in base_datasets + finance_datasets:
         g = catalog.parquet_glob(ds)
         globs[ds] = g
         exists[ds] = _has_any_parquet(g)
@@ -43,6 +56,14 @@ def ensure_derived_views(catalog: DuckDBCatalog) -> None:
     with catalog.connect() as con:
         # 1) Base parquet-backed views. These should never make the pipeline fail.
         for ds in base_datasets:
+            if not exists[ds]:
+                continue
+            con.execute(
+                f"CREATE OR REPLACE VIEW v_{ds} AS SELECT * FROM read_parquet('{globs[ds]}', union_by_name=true);"
+            )
+        
+        # 1b) Finance parquet-backed views
+        for ds in finance_datasets:
             if not exists[ds]:
                 continue
             con.execute(
