@@ -111,61 +111,113 @@ def sync_store(
     if not isinstance(files, list):
         raise RuntimeError("remote manifest missing 'files'")
 
+    progress = None
+    progress_ctx = None
+    scan_task_id = None
+    download_task_id = None
+    if show_progress:
+        try:
+            from rich.progress import (
+                BarColumn,
+                MofNCompleteColumn,
+                Progress,
+                SpinnerColumn,
+                TaskProgressColumn,
+                TextColumn,
+                TimeElapsedColumn,
+                TimeRemainingColumn,
+            )
+
+            progress = Progress(
+                SpinnerColumn(),
+                TextColumn("{task.description}"),
+                BarColumn(),
+                TaskProgressColumn(),
+                MofNCompleteColumn(),
+                TimeElapsedColumn(),
+                TimeRemainingColumn(),
+                transient=True,
+            )
+            progress_ctx = progress
+        except Exception:
+            progress = None
+            progress_ctx = None
+
     # Build a set for optional deletion.
     remote_paths: set[str] = set()
 
     to_download: list[dict] = []
     skipped = 0
 
-    for item in files:
-        if not isinstance(item, dict):
-            continue
-        rel = item.get("path")
-        if not isinstance(rel, str) or not rel.strip():
-            continue
+    if progress_ctx is not None:
+        progress_ctx.__enter__()
+        scan_task_id = progress.add_task("sync: scanning", total=len(files))
 
-        # Remote always uses '/' separators.
-        rel = rel.lstrip("/")
-        remote_paths.add(rel)
+    try:
+        # Batch progress updates to reduce overhead for large manifests.
+        scan_pending = 0
+        scan_flush_every = 200
 
-        size = item.get("size")
-        mtime_ns = item.get("mtime_ns")
-        sha256 = item.get("sha256") if verify_hash else None
+        for item in files:
+            scan_pending += 1
+            if progress is not None and scan_task_id is not None and scan_pending >= scan_flush_every:
+                progress.advance(scan_task_id, scan_pending)
+                scan_pending = 0
 
-        dest = (local_root / rel).resolve()
-        try:
-            dest.relative_to(local_root)
-        except Exception:
-            # Path traversal / weird paths.
-            continue
+            if not isinstance(item, dict):
+                continue
+            rel = item.get("path")
+            if not isinstance(rel, str) or not rel.strip():
+                continue
 
-        # Decide if we need download.
-        # Default behavior is intentionally *mtime-insensitive* because mtimes often differ
-        # across machines/filesystems even when content is identical.
-        if dest.exists() and dest.is_file():
-            st = dest.stat()
+            # Remote always uses '/' separators.
+            rel = rel.lstrip("/")
+            remote_paths.add(rel)
 
-            if verify_hash and sha256:
-                try:
-                    if _sha256_file(dest) == sha256:
+            size = item.get("size")
+            mtime_ns = item.get("mtime_ns")
+            sha256 = item.get("sha256") if verify_hash else None
+
+            dest = (local_root / rel).resolve()
+            try:
+                dest.relative_to(local_root)
+            except Exception:
+                # Path traversal / weird paths.
+                continue
+
+            # Decide if we need download.
+            # Default behavior is intentionally *mtime-insensitive* because mtimes often differ
+            # across machines/filesystems even when content is identical.
+            if dest.exists() and dest.is_file():
+                st = dest.stat()
+
+                if verify_hash and sha256:
+                    try:
+                        if _sha256_file(dest) == sha256:
+                            skipped += 1
+                            continue
+                    except Exception:
+                        # If hashing fails, fall back to download.
+                        pass
+                else:
+                    if size is not None and int(size) == int(st.st_size):
                         skipped += 1
                         continue
-                except Exception:
-                    # If hashing fails, fall back to download.
-                    pass
-            else:
-                if size is not None and int(size) == int(st.st_size):
-                    skipped += 1
-                    continue
 
-                # Fallback only when remote didn't provide size.
-                if mtime_ns is not None:
-                    local_mtime_ns = int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1e9)))
-                    if int(mtime_ns) == local_mtime_ns:
-                        skipped += 1
-                        continue
+                    # Fallback only when remote didn't provide size.
+                    if mtime_ns is not None:
+                        local_mtime_ns = int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1e9)))
+                        if int(mtime_ns) == local_mtime_ns:
+                            skipped += 1
+                            continue
 
-        to_download.append({"rel": rel, "size": size, "mtime_ns": mtime_ns, "sha256": sha256})
+            to_download.append({"rel": rel, "size": size, "mtime_ns": mtime_ns, "sha256": sha256})
+
+        if progress is not None and scan_task_id is not None and scan_pending:
+            progress.advance(scan_task_id, scan_pending)
+    finally:
+        # Keep the progress context open for the download phase.
+        pass
 
     errors: list[str] = []
 
@@ -188,56 +240,20 @@ def sync_store(
     if to_download:
         max_workers = max(1, int(concurrency))
 
-        progress_ctx = None
-        progress = None
-        task_id = None
-        if show_progress:
-            try:
-                from rich.progress import (
-                    BarColumn,
-                    MofNCompleteColumn,
-                    Progress,
-                    SpinnerColumn,
-                    TaskProgressColumn,
-                    TextColumn,
-                    TimeElapsedColumn,
-                    TimeRemainingColumn,
-                )
+        if progress is not None:
+            download_task_id = progress.add_task("sync: downloading", total=len(to_download))
 
-                progress = Progress(
-                    SpinnerColumn(),
-                    TextColumn("{task.description}"),
-                    BarColumn(),
-                    TaskProgressColumn(),
-                    MofNCompleteColumn(),
-                    TimeElapsedColumn(),
-                    TimeRemainingColumn(),
-                    transient=True,
-                )
-                progress_ctx = progress
-            except Exception:
-                progress = None
-                progress_ctx = None
-
-        if progress_ctx is not None:
-            progress_ctx.__enter__()
-            task_id = progress.add_task("sync: downloading", total=len(to_download))
-
-        try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
-                futs = [ex.submit(_one, j) for j in to_download]
-                for fut in concurrent.futures.as_completed(futs):
-                    try:
-                        fut.result()
-                        downloaded += 1
-                    except Exception as e:  # noqa: BLE001
-                        errors.append(str(e))
-                    finally:
-                        if progress is not None and task_id is not None:
-                            progress.advance(task_id, 1)
-        finally:
-            if progress_ctx is not None:
-                progress_ctx.__exit__(None, None, None)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futs = [ex.submit(_one, j) for j in to_download]
+            for fut in concurrent.futures.as_completed(futs):
+                try:
+                    fut.result()
+                    downloaded += 1
+                except Exception as e:  # noqa: BLE001
+                    errors.append(str(e))
+                finally:
+                    if progress is not None and download_task_id is not None:
+                        progress.advance(download_task_id, 1)
 
     deleted = 0
     if delete:
@@ -262,5 +278,8 @@ def sync_store(
                         deleted += 1
                     except Exception as e:  # noqa: BLE001
                         errors.append(f"delete {rel}: {e}")
+
+    if progress_ctx is not None:
+        progress_ctx.__exit__(None, None, None)
 
     return SyncResult(downloaded=downloaded, skipped=skipped, deleted=deleted, errors=errors)
