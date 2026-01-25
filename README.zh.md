@@ -139,6 +139,12 @@ stock-data serve --store store --host 0.0.0.0 --port 8000
 stock-data sync --store store --remote http://1.2.3.4:8000
 ```
 
+如果远端是默认端口（http=80 / https=443），可以省略端口：
+
+```bash
+stock-data sync --store store --remote http://stock-data.example.com
+```
+
 说明：
 - 同步范围只包含 `store/duckdb/` 与 `store/parquet/` 两个子目录。
 - `--hash` 会对每个文件做 sha256 校验（更慢但更安全）。

@@ -115,9 +115,12 @@ def run_command(args, *, token: str) -> int:
             u = urlparse(remote)
             if u.scheme not in {"http", "https"}:
                 raise ValueError("--remote must be an http(s) URL, e.g. http://1.2.3.4:8000")
-            if not u.hostname or not u.port:
-                raise ValueError("--remote must include host and port, e.g. http://1.2.3.4:8000")
-            base_url = f"{u.scheme}://{u.hostname}:{int(u.port)}"
+            if not u.hostname:
+                raise ValueError("--remote must include a hostname, e.g. http://example.com")
+            port = u.port
+            if port is None:
+                port = 80 if u.scheme == "http" else 443
+            base_url = f"{u.scheme}://{u.hostname}:{int(port)}"
         else:
             if not getattr(args, "remote_host", None) or not getattr(args, "remote_port", None):
                 raise ValueError("Missing remote: use --remote http://host:port or pass --remote-host/--remote-port")
@@ -129,6 +132,7 @@ def run_command(args, *, token: str) -> int:
             dry_run=bool(getattr(args, "dry_run", False)),
             verify_hash=bool(getattr(args, "hash", False)),
             concurrency=int(getattr(args, "concurrency", 4) or 4),
+            show_progress=True,
         )
 
         if res.errors:

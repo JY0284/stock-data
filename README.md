@@ -138,6 +138,12 @@ On the **local** machine (client):
 stock-data sync --store store --remote http://1.2.3.4:8000
 ```
 
+If the remote uses default ports, you can omit the port:
+
+```bash
+stock-data sync --store store --remote http://stock-data.example.com
+```
+
 Notes:
 - This sync only reads/writes files under `store/duckdb/` and `store/parquet/`.
 - Use `--hash` for sha256 verification (slower, safer).

@@ -56,7 +56,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sync.add_argument(
         "--remote",
         default=None,
-        help="Remote base URL, e.g. http://1.2.3.4:8000 (overrides --remote-host/--remote-port)",
+        help="Remote base URL, e.g. http://example.com or http://1.2.3.4:8000 (overrides --remote-host/--remote-port)",
     )
     sync.add_argument("--remote-host", default=None, help="Remote service host (IP or DNS)")
     sync.add_argument("--remote-port", type=int, default=None, help="Remote service port")

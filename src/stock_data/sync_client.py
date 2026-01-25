@@ -90,6 +90,7 @@ def sync_store(
     dry_run: bool = False,
     verify_hash: bool = False,
     concurrency: int = 4,
+    show_progress: bool = False,
 ) -> SyncResult:
     """Sync local store from remote.
 
@@ -176,14 +177,57 @@ def sync_store(
 
     if to_download:
         max_workers = max(1, int(concurrency))
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
-            futs = [ex.submit(_one, j) for j in to_download]
-            for fut in concurrent.futures.as_completed(futs):
-                try:
-                    fut.result()
-                    downloaded += 1
-                except Exception as e:  # noqa: BLE001
-                    errors.append(str(e))
+
+        progress_ctx = None
+        progress = None
+        task_id = None
+        if show_progress:
+            try:
+                from rich.progress import (
+                    BarColumn,
+                    MofNCompleteColumn,
+                    Progress,
+                    SpinnerColumn,
+                    TaskProgressColumn,
+                    TextColumn,
+                    TimeElapsedColumn,
+                    TimeRemainingColumn,
+                )
+
+                progress = Progress(
+                    SpinnerColumn(),
+                    TextColumn("{task.description}"),
+                    BarColumn(),
+                    TaskProgressColumn(),
+                    MofNCompleteColumn(),
+                    TimeElapsedColumn(),
+                    TimeRemainingColumn(),
+                    transient=True,
+                )
+                progress_ctx = progress
+            except Exception:
+                progress = None
+                progress_ctx = None
+
+        if progress_ctx is not None:
+            progress_ctx.__enter__()
+            task_id = progress.add_task("sync: downloading", total=len(to_download))
+
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
+                futs = [ex.submit(_one, j) for j in to_download]
+                for fut in concurrent.futures.as_completed(futs):
+                    try:
+                        fut.result()
+                        downloaded += 1
+                    except Exception as e:  # noqa: BLE001
+                        errors.append(str(e))
+                    finally:
+                        if progress is not None and task_id is not None:
+                            progress.advance(task_id, 1)
+        finally:
+            if progress_ctx is not None:
+                progress_ctx.__exit__(None, None, None)
 
     deleted = 0
     if delete:
