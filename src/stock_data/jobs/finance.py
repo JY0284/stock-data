@@ -70,6 +70,150 @@ def _generate_quarterly_periods(start_date: str, end_date: str) -> list[str]:
     return periods
 
 
+def _run_ts_code_datasets(
+    cfg: RunConfig,
+    client: TushareClient,
+    catalog: DuckDBCatalog,
+    w: ParquetWriter,
+    datasets: list[str],
+) -> None:
+    """Run ingestion for ts_code-based datasets (one file per stock).
+    
+    For dividend and fina_audit, we query each stock individually and store
+    the full history as <dataset>/ts_code=<code>.parquet
+    """
+    import os
+    
+    # Get stock codes
+    stock_codes = _get_stock_codes(catalog)
+    logger.info("finance: found %d stock codes for ts_code datasets", len(stock_codes))
+    
+    # Build tasks: (dataset, ts_code)
+    tasks: list[tuple[str, str]] = []
+    for ds in datasets:
+        completed = catalog.completed_partitions(ds)
+        for code in stock_codes:
+            # Partition key uses safe format
+            key = f"ts_code={code.replace('.', '_')}"
+            if key not in completed:
+                tasks.append((ds, code))
+    
+    if not tasks:
+        logger.info("finance: nothing to do for ts_code datasets=%s", ",".join(datasets))
+        return
+    
+    logger.info(
+        "finance: start ts_code datasets (datasets=%s, tasks=%d, workers=%d, rpm=%d)",
+        ",".join(sorted(set(datasets))),
+        len(tasks),
+        cfg.workers,
+        cfg.rpm,
+    )
+    
+    running: set[tuple[str, str]] = set()
+    running_lock = threading.Lock()
+    
+    def _fetch_and_store(dataset: str, ts_code: str) -> int:
+        key = f"ts_code={ts_code.replace('.', '_')}"
+        catalog.set_state(dataset=dataset, partition_key=key, status="running")
+        with running_lock:
+            running.add((dataset, ts_code))
+        try:
+            logger.debug("finance: fetch start dataset=%s ts_code=%s", dataset, ts_code)
+            
+            # Query by ts_code
+            df = client.query(dataset, ts_code=ts_code)
+            
+            if df is None:
+                df = pd.DataFrame()
+            
+            w.write_ts_code_partition(dataset, ts_code, df)
+            catalog.set_state(dataset=dataset, partition_key=key, status="completed", row_count=int(len(df)))
+            logger.debug("finance: fetch done dataset=%s ts_code=%s rows=%d", dataset, ts_code, int(len(df)))
+            return int(len(df))
+        except Exception as e:  # noqa: BLE001
+            catalog.set_state(dataset=dataset, partition_key=key, status="failed", error=str(e))
+            if isinstance(e, (TransientError, RateLimitError)):
+                logger.warning(
+                    "finance: fetch failed dataset=%s ts_code=%s (%s)",
+                    dataset,
+                    ts_code,
+                    e,
+                )
+            else:
+                logger.exception("finance: fetch failed dataset=%s ts_code=%s", dataset, ts_code)
+            raise
+        finally:
+            with running_lock:
+                running.discard((dataset, ts_code))
+    
+    with ThreadPoolExecutor(max_workers=cfg.workers) as ex:
+        future_to_task = {ex.submit(_fetch_and_store, ds, code): (ds, code) for (ds, code) in tasks}
+        console = Console(stderr=True)
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
+            console=console,
+            transient=False,
+        ) as progress:
+            ptask = progress.add_task("finance-tscode", total=len(future_to_task))
+            failed: list[tuple[str, str, str]] = []
+            
+            for f in as_completed(future_to_task):
+                ds, code = future_to_task[f]
+                try:
+                    rows = f.result()
+                    with running_lock:
+                        running_count = len(running)
+                    progress.update(
+                        ptask,
+                        description=f"finance-tscode (running={running_count} failed={len(failed)}) last={ds} {code} rows={rows}",
+                    )
+                except Exception as e:  # noqa: BLE001
+                    failed.append((ds, code, str(e)))
+                    with running_lock:
+                        running_count = len(running)
+                    progress.update(
+                        ptask,
+                        description=f"finance-tscode (running={running_count} failed={len(failed)}) last=FAILED {ds} {code}",
+                    )
+                finally:
+                    progress.advance(ptask, 1)
+            
+            if failed:
+                sample = "; ".join([f"{ds}:{code}" for (ds, code, _) in failed[:10]])
+                logger.error("finance: %d ts_code task(s) failed; sample: %s", len(failed), sample)
+                raise RuntimeError(f"finance: {len(failed)} ts_code task(s) failed; sample: {sample}")
+    
+    logger.info("finance: completed ts_code datasets (tasks=%d)", len(tasks))
+
+
+def _get_stock_codes(catalog: DuckDBCatalog) -> list[str]:
+    """Get all stock codes from stock_basic parquet file."""
+    import os
+    stock_basic_path = os.path.join(catalog.parquet_root, "stock_basic", "latest.parquet")
+    if not os.path.exists(stock_basic_path):
+        raise RuntimeError("stock_basic not found. Run basic datasets first.")
+    import pandas as pd
+    df = pd.read_parquet(stock_basic_path)
+    return df["ts_code"].tolist()
+
+
+def _get_index_codes(catalog: DuckDBCatalog) -> list[str]:
+    """Get all index codes from index_basic parquet file."""
+    import os
+    index_basic_path = os.path.join(catalog.parquet_root, "index_basic", "latest.parquet")
+    if not os.path.exists(index_basic_path):
+        raise RuntimeError("index_basic not found. Run basic datasets first.")
+    import pandas as pd
+    df = pd.read_parquet(index_basic_path)
+    return df["ts_code"].tolist()
+
+
 def run_finance(
     cfg: RunConfig,
     *,
@@ -83,6 +227,9 @@ def run_finance(
     
     Financial datasets are partitioned by report period (end_date), not trading date.
     We use *_vip endpoints to fetch all stocks for a given quarter in one call.
+    
+    Some datasets (dividend, fina_audit) require ts_code parameter and are partitioned
+    by ts_code (one file per stock containing full history).
     """
     if not datasets:
         return
@@ -91,9 +238,10 @@ def run_finance(
     client = TushareClient(token=token, limiter=limiter)
     w = _writer(cfg)
 
-    # Separate snapshot datasets from period-partitioned datasets
+    # Separate dataset types
     snapshot_datasets = {"disclosure_date"}
-    period_datasets = [d for d in datasets if d not in snapshot_datasets]
+    ts_code_datasets = {"dividend", "fina_audit"}
+    period_datasets = [d for d in datasets if d not in snapshot_datasets and d not in ts_code_datasets]
     
     # Handle snapshot datasets first
     if "disclosure_date" in datasets:
@@ -111,6 +259,11 @@ def run_finance(
             catalog.set_state(dataset="disclosure_date", partition_key=key, status="failed", error=str(e))
             logger.exception("finance: disclosure_date failed")
             raise
+
+    # Handle ts_code-based datasets (dividend, fina_audit)
+    ts_code_to_fetch = [d for d in datasets if d in ts_code_datasets]
+    if ts_code_to_fetch:
+        _run_ts_code_datasets(cfg, client, catalog, w, ts_code_to_fetch)
 
     if not period_datasets:
         return
@@ -170,11 +323,12 @@ def run_finance(
         "fina_mainbz": "fina_mainbz_vip",
     }
     
-    # Non-VIP endpoints (still use period parameter)
-    non_vip_endpoints = {
-        "dividend": "dividend",
-        "fina_audit": "fina_audit",
-    }
+    # Non-VIP endpoints that have been disabled (require ts_code, cannot query by period alone)
+    # non_vip_endpoints = {
+    #     "dividend": "dividend",  # Requires ts_code
+    #     "fina_audit": "fina_audit",  # Requires ts_code
+    # }
+    non_vip_endpoints = {}
 
     def _fetch_and_store(dataset: str, period: str) -> int:
         key = period

@@ -64,6 +64,31 @@ class ParquetWriter:
         final_path = os.path.join(ddir, f"trade_date={trade_date}.parquet")
         return self._write_atomic(df, final_path)
 
+    def write_ts_code_partition(self, dataset: str, ts_code: str, df) -> str:
+        """
+        Writes a ts_code-partitioned file (snapshot per stock/index):
+          <base>/<dataset>/ts_code=<code>.parquet
+
+        We overwrite partitions idempotently (atomic replace).
+        """
+        # Some API calls may return None (or an empty frame without schema).
+        try:
+            import pandas as pd
+
+            if df is None:
+                df = pd.DataFrame({"ts_code": pd.Series(dtype="string")})
+            elif isinstance(df, pd.DataFrame) and df.empty and len(df.columns) == 0:
+                df = pd.DataFrame({"ts_code": pd.Series(dtype="string")})
+        except Exception:
+            pass
+
+        ddir = self.dataset_dir(dataset)
+        _ensure_dir(ddir)
+        # Replace dots in ts_code to avoid file system issues (e.g., 000001.SZ -> 000001_SZ)
+        safe_code = ts_code.replace(".", "_")
+        final_path = os.path.join(ddir, f"ts_code={safe_code}.parquet")
+        return self._write_atomic(df, final_path)
+
     def write_end_date_partition(self, dataset: str, end_date: str, df) -> str:
         """
         Writes a report-period-partitioned file for financial data:

@@ -82,6 +82,133 @@ def _needed_dates_for_dataset(
     return [d for d in open_dates if d >= start_date and d not in completed]
 
 
+def _get_index_codes(catalog: DuckDBCatalog) -> list[str]:
+    """Get major index codes from index_basic parquet file.
+    
+    Only returns SSE and SZSE indices (Shanghai and Shenzhen Stock Exchange).
+    Other markets (CSI, MSCI, SW, OTH) have too many indices (~10K+) and are rarely needed.
+    """
+    import os
+    index_basic_path = os.path.join(catalog.parquet_root, "index_basic", "latest.parquet")
+    if not os.path.exists(index_basic_path):
+        raise RuntimeError("index_basic not found. Run basic datasets first.")
+    df = pd.read_parquet(index_basic_path)
+    # Filter to only major Chinese exchange indices
+    major_markets = ["SSE", "SZSE"]
+    df = df[df["market"].isin(major_markets)]
+    return df["ts_code"].tolist()
+
+
+def _run_index_daily(
+    cfg: RunConfig,
+    client: TushareClient,
+    catalog: DuckDBCatalog,
+    w: ParquetWriter,
+) -> None:
+    """Run ingestion for index_daily (one file per index containing full history)."""
+    import os
+    
+    # Get index codes
+    index_codes = _get_index_codes(catalog)
+    logger.info("market: found %d index codes for index_daily", len(index_codes))
+    
+    # Build tasks: ts_code
+    tasks: list[str] = []
+    completed = catalog.completed_partitions("index_daily")
+    for code in index_codes:
+        key = f"ts_code={code.replace('.', '_')}"
+        if key not in completed:
+            tasks.append(code)
+    
+    if not tasks:
+        logger.info("market: nothing to do for index_daily")
+        return
+    
+    logger.info(
+        "market: start index_daily (tasks=%d, workers=%d, rpm=%d)",
+        len(tasks),
+        cfg.workers,
+        cfg.rpm,
+    )
+    
+    running: set[str] = set()
+    running_lock = threading.Lock()
+    
+    def _fetch_and_store(ts_code: str) -> int:
+        key = f"ts_code={ts_code.replace('.', '_')}"
+        catalog.set_state(dataset="index_daily", partition_key=key, status="running")
+        with running_lock:
+            running.add(ts_code)
+        try:
+            logger.debug("market: fetch start index_daily ts_code=%s", ts_code)
+            
+            # Query all history for this index
+            df = client.query("index_daily", ts_code=ts_code)
+            
+            if df is None:
+                df = pd.DataFrame()
+            
+            w.write_ts_code_partition("index_daily", ts_code, df)
+            catalog.set_state(dataset="index_daily", partition_key=key, status="completed", row_count=int(len(df)))
+            logger.debug("market: fetch done index_daily ts_code=%s rows=%d", ts_code, int(len(df)))
+            return int(len(df))
+        except Exception as e:  # noqa: BLE001
+            catalog.set_state(dataset="index_daily", partition_key=key, status="failed", error=str(e))
+            from stock_data.retry import RateLimitError, TransientError
+            if isinstance(e, (TransientError, RateLimitError)):
+                logger.warning("market: fetch failed index_daily ts_code=%s (%s)", ts_code, e)
+            else:
+                logger.exception("market: fetch failed index_daily ts_code=%s", ts_code)
+            raise
+        finally:
+            with running_lock:
+                running.discard(ts_code)
+    
+    with ThreadPoolExecutor(max_workers=cfg.workers) as ex:
+        future_to_task = {ex.submit(_fetch_and_store, code): code for code in tasks}
+        console = Console(stderr=True)
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
+            console=console,
+            transient=False,
+        ) as progress:
+            ptask = progress.add_task("index_daily", total=len(future_to_task))
+            failed: list[tuple[str, str]] = []
+            
+            for f in as_completed(future_to_task):
+                code = future_to_task[f]
+                try:
+                    rows = f.result()
+                    with running_lock:
+                        running_count = len(running)
+                    progress.update(
+                        ptask,
+                        description=f"index_daily (running={running_count} failed={len(failed)}) last={code} rows={rows}",
+                    )
+                except Exception as e:  # noqa: BLE001
+                    failed.append((code, str(e)))
+                    with running_lock:
+                        running_count = len(running)
+                    progress.update(
+                        ptask,
+                        description=f"index_daily (running={running_count} failed={len(failed)}) last=FAILED {code}",
+                    )
+                finally:
+                    progress.advance(ptask, 1)
+            
+            if failed:
+                sample = "; ".join([code for (code, _) in failed[:10]])
+                logger.error("market: %d index_daily task(s) failed; sample: %s", len(failed), sample)
+                raise RuntimeError(f"market: {len(failed)} index_daily task(s) failed; sample: {sample}")
+    
+    logger.info("market: completed index_daily (tasks=%d)", len(tasks))
+
+
 def run_market(
     cfg: RunConfig,
     *,
@@ -97,6 +224,13 @@ def run_market(
     limiter = RateLimiter(rpm=cfg.rpm)
     client = TushareClient(token=token, limiter=limiter)
     w = _writer(cfg)
+
+    # Handle index_daily separately (ts_code-based)
+    if "index_daily" in datasets:
+        _run_index_daily(cfg, client, catalog, w)
+        datasets = [d for d in datasets if d != "index_daily"]
+        if not datasets:
+            return
 
     # We always need an exchange calendar to generate correct partitions.
     cal_start = start_date or "19900101"
@@ -131,8 +265,8 @@ def run_market(
     date_map: dict[str, list[str]] = {}
 
     # Daily-ish datasets use every open trade date.
-    dailyish = {"daily", "adj_factor", "daily_basic", "stk_limit", "suspend_d", "index_daily", "etf_daily"}
-    must_nonempty = {"daily", "adj_factor", "daily_basic", "weekly", "monthly", "index_daily", "etf_daily"}
+    dailyish = {"daily", "adj_factor", "daily_basic", "stk_limit", "suspend_d", "etf_daily"}
+    must_nonempty = {"daily", "adj_factor", "daily_basic", "weekly", "monthly", "etf_daily"}
     if start_date is None:
         # incremental: start from the last completed partition per-dataset
         for ds in datasets:
@@ -260,8 +394,7 @@ def run_market(
                 df_s = client.query("suspend_d", suspend_type="S", trade_date=trade_date)
                 df_r = client.query("suspend_d", suspend_type="R", trade_date=trade_date)
                 df = pd.concat([df_s, df_r], ignore_index=True)
-            elif dataset == "index_daily":
-                df = client.query("index_daily", trade_date=trade_date)
+            # index_daily is not supported - requires ts_code parameter, cannot query by trade_date alone
             elif dataset == "etf_daily":
                 # Tushare does not provide a separate "etf_daily" endpoint in `pro.query`.
                 # The commonly used daily bars endpoint for exchange-traded funds is `fund_daily`.

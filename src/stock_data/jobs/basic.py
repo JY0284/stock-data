@@ -97,7 +97,50 @@ def run_basic(
             catalog.set_state(dataset="stock_company", partition_key=key, status="failed", error=str(e))
             raise
 
-    # 4) new_share (IPO list) – windowed by year during backfill; else keep last 10y snapshot.
+    # 4) index_basic snapshot (all major indices)
+    if "index_basic" in datasets:
+        key = f"asof={end_date}"
+        catalog.set_state(dataset="index_basic", partition_key=key, status="running")
+        try:
+            parts = []
+            # Fetch from all major markets
+            for market in ["SSE", "SZSE", "CSI", "SW", "MSCI", "OTH"]:
+                df_part = client.query(
+                    "index_basic",
+                    market=market,
+                    fields="ts_code,name,fullname,market,publisher,index_type,category,base_date,base_point,list_date,weight_rule,desc,exp_date",
+                )
+                if df_part is not None and not df_part.empty:
+                    parts.append(df_part)
+            if parts:
+                df = pd.concat(parts, ignore_index=True).drop_duplicates(subset=["ts_code"], keep="first")
+            else:
+                df = pd.DataFrame()
+            w.write_snapshot("index_basic", df, name="latest")
+            catalog.set_state(dataset="index_basic", partition_key=key, status="completed", row_count=int(len(df)))
+        except Exception as e:  # noqa: BLE001
+            catalog.set_state(dataset="index_basic", partition_key=key, status="failed", error=str(e))
+            raise
+
+    # 5) fund_basic snapshot (all ETFs)
+    if "fund_basic" in datasets:
+        key = f"asof={end_date}"
+        catalog.set_state(dataset="fund_basic", partition_key=key, status="running")
+        try:
+            # Fetch ETFs (market='E')
+            df = client.query(
+                "fund_basic",
+                market="E",
+            )
+            if df is None:
+                df = pd.DataFrame()
+            w.write_snapshot("fund_basic", df, name="latest")
+            catalog.set_state(dataset="fund_basic", partition_key=key, status="completed", row_count=int(len(df)))
+        except Exception as e:  # noqa: BLE001
+            catalog.set_state(dataset="fund_basic", partition_key=key, status="failed", error=str(e))
+            raise
+
+    # 6) new_share (IPO list) – windowed by year during backfill; else keep last 10y snapshot.
     if "new_share" in datasets:
         if start_date:
             windows = year_windows(start_date, end_date)

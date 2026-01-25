@@ -67,7 +67,7 @@ class TushareClient:
             # If Tushare returns an empty/columnless frame (sometimes happens under
             # throttling/partial failures), treat it as transient so tenacity retries.
             if isinstance(df, pd.DataFrame) and (len(df.columns) == 0 or df.empty):
-                if api_name in {"daily", "adj_factor", "daily_basic", "weekly", "monthly", "index_daily", "fund_daily"}:
+                if api_name in {"daily", "adj_factor", "daily_basic", "weekly", "monthly", "fund_daily"}:
                     raise TransientError(f"Empty response for api={api_name} params={params}")
 
             return df
