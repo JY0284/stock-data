@@ -266,7 +266,8 @@ def run_market(
 
     # Daily-ish datasets use every open trade date.
     dailyish = {"daily", "adj_factor", "daily_basic", "stk_limit", "suspend_d", "etf_daily"}
-    must_nonempty = {"daily", "adj_factor", "daily_basic", "weekly", "monthly", "etf_daily"}
+    # Note: etf_daily is NOT in must_nonempty because ETFs didn't exist before 2004
+    must_nonempty = {"daily", "adj_factor", "daily_basic", "weekly", "monthly"}
     if start_date is None:
         # incremental: start from the last completed partition per-dataset
         for ds in datasets:

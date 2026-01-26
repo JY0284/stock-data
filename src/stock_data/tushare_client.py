@@ -66,8 +66,9 @@ class TushareClient:
             # Some endpoints are expected to return non-empty data for open days.
             # If Tushare returns an empty/columnless frame (sometimes happens under
             # throttling/partial failures), treat it as transient so tenacity retries.
+            # Note: fund_daily is NOT included because ETFs didn't exist before 2004.
             if isinstance(df, pd.DataFrame) and (len(df.columns) == 0 or df.empty):
-                if api_name in {"daily", "adj_factor", "daily_basic", "weekly", "monthly", "fund_daily"}:
+                if api_name in {"daily", "adj_factor", "daily_basic", "weekly", "monthly"}:
                     raise TransientError(f"Empty response for api={api_name} params={params}")
 
             return df

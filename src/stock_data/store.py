@@ -639,6 +639,32 @@ class StockStore:
         return df
 
     # -----------------------------
+    # Public API: index datasets (ts_code partitioned)
+    # -----------------------------
+    def index_daily(
+        self,
+        ts_code: str,
+        *,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        columns: list[str] | None = None,
+        cache: bool = True,
+    ) -> pd.DataFrame:
+        """Get index daily bars for a given index code.
+        
+        Data is stored as one file per index: index_daily/ts_code=XXXXXX_XX.parquet
+        """
+        return self._read_ts_code_dataset(
+            "index_daily",
+            ts_code=ts_code,
+            start_date=start_date,
+            end_date=end_date,
+            columns=columns,
+            date_column="trade_date",
+            cache=cache,
+        )
+
+    # -----------------------------
     # Public API: finance datasets
     # -----------------------------
     def income(
@@ -745,19 +771,22 @@ class StockStore:
         self,
         ts_code: str,
         *,
-        start_period: str | None = None,
-        end_period: str | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
         columns: list[str] | None = None,
         cache: bool = True,
     ) -> pd.DataFrame:
-        """Get dividend distribution (分红送股) data for a stock."""
-        return self._read_end_date_dataset(
+        """Get dividend distribution (分红送股) data for a stock.
+        
+        Data is stored as one file per stock: dividend/ts_code=XXXXXX_XX.parquet
+        """
+        return self._read_ts_code_dataset(
             "dividend",
             ts_code=ts_code,
-            start_period=start_period,
-            end_period=end_period,
+            start_date=start_date,
+            end_date=end_date,
             columns=columns,
-            order_by="end_date",
+            date_column="end_date",
             cache=cache,
         )
 
@@ -785,19 +814,22 @@ class StockStore:
         self,
         ts_code: str,
         *,
-        start_period: str | None = None,
-        end_period: str | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
         columns: list[str] | None = None,
         cache: bool = True,
     ) -> pd.DataFrame:
-        """Get financial audit opinion (财务审计意见) data for a stock."""
-        return self._read_end_date_dataset(
+        """Get financial audit opinion (财务审计意见) data for a stock.
+        
+        Data is stored as one file per stock: fina_audit/ts_code=XXXXXX_XX.parquet
+        """
+        return self._read_ts_code_dataset(
             "fina_audit",
             ts_code=ts_code,
-            start_period=start_period,
-            end_period=end_period,
+            start_date=start_date,
+            end_date=end_date,
             columns=columns,
-            order_by="end_date",
+            date_column="end_date",
             cache=cache,
         )
 
@@ -820,6 +852,89 @@ class StockStore:
             order_by="end_date",
             cache=cache,
         )
+
+    # -----------------------------
+    # Public API: ETF datasets (ts_code partitioned)
+    # -----------------------------
+    def fund_nav(
+        self,
+        ts_code: str,
+        *,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        columns: list[str] | None = None,
+        cache: bool = True,
+    ) -> pd.DataFrame:
+        """Get ETF net asset value (单位净值) for a given ETF code.
+        
+        Data is stored as one file per ETF: fund_nav/ts_code=XXXXXX_XX.parquet
+        """
+        return self._read_ts_code_dataset(
+            "fund_nav",
+            ts_code=ts_code,
+            start_date=start_date,
+            end_date=end_date,
+            columns=columns,
+            date_column="nav_date",
+            cache=cache,
+        )
+
+    def fund_share(
+        self,
+        ts_code: str,
+        *,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        columns: list[str] | None = None,
+        cache: bool = True,
+    ) -> pd.DataFrame:
+        """Get ETF shares outstanding (份额变动) for a given ETF code.
+        
+        Data is stored as one file per ETF: fund_share/ts_code=XXXXXX_XX.parquet
+        """
+        return self._read_ts_code_dataset(
+            "fund_share",
+            ts_code=ts_code,
+            start_date=start_date,
+            end_date=end_date,
+            columns=columns,
+            date_column="trade_date",
+            cache=cache,
+        )
+
+    def fund_div(
+        self,
+        ts_code: str,
+        *,
+        columns: list[str] | None = None,
+        cache: bool = True,
+    ) -> pd.DataFrame:
+        """Get ETF dividend distribution (分红送配) for a given ETF code.
+        
+        Data is stored as one file per ETF: fund_div/ts_code=XXXXXX_XX.parquet
+        Note: No date filtering as dividend data is small and ann_date may be null.
+        """
+        cache_key = self._cache_key(f"ds:fund_div", ts_code=ts_code, columns=columns)
+        if cache and self._cache_enabled:
+            hit = self._cache.get(cache_key)
+            if hit is not None:
+                return hit.copy()
+
+        safe_code = ts_code.replace(".", "_")
+        file_path = os.path.join(self.parquet_dir, "fund_div", f"ts_code={safe_code}.parquet")
+        
+        if not os.path.exists(file_path):
+            return pd.DataFrame()
+
+        sql_cols = "*" if not columns else ", ".join(_quote_ident(c) for c in columns)
+        sql = f"SELECT {sql_cols} FROM read_parquet(?)"
+        
+        con = self._connect()
+        df = con.execute(sql, [file_path]).fetchdf()
+
+        if cache and self._cache_enabled:
+            self._cache.set(cache_key, df.copy(), size_bytes=_estimate_df_bytes(df))
+        return df
 
     # -----------------------------
     # Escape hatches
@@ -1125,6 +1240,65 @@ class StockStore:
             p.append(str(end_period))
         if order_by:
             sql += f" ORDER BY {_quote_ident(order_by)}"
+
+        con = self._connect()
+        df = con.execute(sql, p).fetchdf()
+
+        if cache and self._cache_enabled:
+            self._cache.set(cache_key, df.copy(), size_bytes=_estimate_df_bytes(df))
+        return df
+
+    def _read_ts_code_dataset(
+        self,
+        dataset: str,
+        *,
+        ts_code: str,
+        start_date: str | None,
+        end_date: str | None,
+        columns: list[str] | None,
+        date_column: str,
+        cache: bool,
+    ) -> pd.DataFrame:
+        """Read dataset partitioned by ts_code (one file per code containing full history).
+        
+        Each file is: <dataset>/ts_code=XXXXXX_XX.parquet
+        """
+        cache_key = self._cache_key(
+            f"ds:{dataset}",
+            ts_code=ts_code,
+            start_date=start_date,
+            end_date=end_date,
+            columns=columns,
+        )
+        if cache and self._cache_enabled:
+            hit = self._cache.get(cache_key)
+            if hit is not None:
+                return hit.copy()
+
+        # Build path to the specific ts_code file
+        safe_code = ts_code.replace(".", "_")
+        file_path = os.path.join(self.parquet_dir, dataset, f"ts_code={safe_code}.parquet")
+        
+        if not os.path.exists(file_path):
+            return pd.DataFrame()
+
+        sql_cols = "*" if not columns else ", ".join(_quote_ident(c) for c in columns)
+        sql = f"SELECT {sql_cols} FROM read_parquet(?)"
+        p = [file_path]
+        
+        # Add date filters if provided
+        where_clauses = []
+        if start_date is not None:
+            where_clauses.append(f"{_quote_ident(date_column)} >= ?")
+            p.append(str(start_date))
+        if end_date is not None:
+            where_clauses.append(f"{_quote_ident(date_column)} <= ?")
+            p.append(str(end_date))
+        
+        if where_clauses:
+            sql += " WHERE " + " AND ".join(where_clauses)
+        
+        sql += f" ORDER BY {_quote_ident(date_column)}"
 
         con = self._connect()
         df = con.execute(sql, p).fetchdf()

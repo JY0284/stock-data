@@ -43,39 +43,58 @@ def _dir_size_bytes(path: str) -> int:
 
 _TRADE_DATE_RE = re.compile(r"trade_date=(\d{8})\.parquet$")
 _END_DATE_RE = re.compile(r"end_date=(\d{8})\.parquet$")
+_TS_CODE_RE = re.compile(r"ts_code=([^.]+)\.parquet$")
+
+# Datasets that are partitioned by ts_code instead of date
+_TS_CODE_DATASETS = {"index_daily", "dividend", "fina_audit", "fund_nav", "fund_share", "fund_div"}
 
 
-def _parquet_file_count_and_date_range(dataset_dir: str) -> tuple[int, str | None, str | None]:
-    """Return (file_count, min_date, max_date) using filenames.
+def _parquet_file_count_and_date_range(dataset_dir: str, dataset_name: str = "") -> tuple[int, str | None, str | None]:
+    """Return (file_count, min_partition, max_partition) using filenames.
 
     This does not open Parquet files, so it works even while ingestion is running
     or if DuckDB is locked by another process.
     
-    Recognizes both trade_date= and end_date= patterns.
+    Recognizes trade_date=, end_date=, and ts_code= patterns.
+    For ts_code-partitioned datasets, returns (count, first_code, last_code).
     """
     file_count = 0
     min_d = None
     max_d = None
+    ts_codes = []
     if not os.path.exists(dataset_dir):
         return 0, None, None
+
+    is_ts_code_dataset = dataset_name in _TS_CODE_DATASETS
 
     for root, _dirs, files in os.walk(dataset_dir):
         for name in files:
             if not name.endswith(".parquet"):
                 continue
             file_count += 1
-            # Try trade_date pattern first
-            m = _TRADE_DATE_RE.search(name)
-            if not m:
-                # Try end_date pattern (for finance datasets)
-                m = _END_DATE_RE.search(name)
-            if not m:
-                continue
-            d = m.group(1)
-            if min_d is None or d < min_d:
-                min_d = d
-            if max_d is None or d > max_d:
-                max_d = d
+            
+            if is_ts_code_dataset:
+                # For ts_code datasets, collect the codes
+                m = _TS_CODE_RE.search(name)
+                if m:
+                    ts_codes.append(m.group(1))
+            else:
+                # Try trade_date pattern first
+                m = _TRADE_DATE_RE.search(name)
+                if not m:
+                    # Try end_date pattern (for finance datasets)
+                    m = _END_DATE_RE.search(name)
+                if not m:
+                    continue
+                d = m.group(1)
+                if min_d is None or d < min_d:
+                    min_d = d
+                if max_d is None or d > max_d:
+                    max_d = d
+
+    if is_ts_code_dataset and ts_codes:
+        # For ts_code datasets, show count as "N codes" format
+        return file_count, f"{len(ts_codes)} codes", None
 
     return file_count, min_d, max_d
 
@@ -140,7 +159,7 @@ def _fetch_duckdb_stats_readonly(duckdb_path: str, dataset: str) -> tuple[int, i
 def _fetch_stats(cfg: RunConfig, dataset: str, *, try_duckdb: bool) -> DatasetStat:
     parquet_path = os.path.join(cfg.parquet_dir, dataset)
     parquet_bytes = _dir_size_bytes(parquet_path)
-    parquet_files, min_d, max_d = _parquet_file_count_and_date_range(parquet_path)
+    parquet_files, min_d, max_d = _parquet_file_count_and_date_range(parquet_path, dataset)
 
     completed = failed = running = None
     min_p = max_p = None
