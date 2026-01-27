@@ -111,10 +111,19 @@ class StockStore:
         "suspend_d",
         "weekly",
         "monthly",
+        # ETF daily bars are trade_date-partitioned.
+        "etf_daily",
     }
 
     # Snapshot datasets in this repo.
-    _SNAPSHOT_DATASETS: set[str] = {"stock_basic", "stock_company", "trade_cal"}
+    _SNAPSHOT_DATASETS: set[str] = {
+        "stock_basic",
+        "stock_company",
+        "trade_cal",
+        "index_basic",
+        "fund_basic",
+        "disclosure_date",
+    }
 
     # Windowed-by-year datasets in this repo.
     _YEAR_WINDOW_DATASETS: set[str] = {"new_share", "namechange"}
@@ -126,10 +135,18 @@ class StockStore:
         "cashflow",
         "forecast",
         "express",
-        "dividend",
         "fina_indicator",
-        "fina_audit",
         "fina_mainbz",
+    }
+
+    # ts_code-partitioned datasets (one parquet per code containing full history).
+    _TS_CODE_DATASETS: set[str] = {
+        "index_daily",
+        "dividend",
+        "fina_audit",
+        "fund_nav",
+        "fund_share",
+        "fund_div",
     }
 
     def __init__(
@@ -975,7 +992,7 @@ class StockStore:
             if hit is not None:
                 return hit.copy()
 
-        if ds in {"stock_basic", "stock_company"}:
+        if ds in self._SNAPSHOT_DATASETS:
             df = self._read_snapshot_dataset(ds)
             df = _apply_where(df, where)
             df = _apply_columns_limit_order(df, columns, limit, order_by)
@@ -986,6 +1003,73 @@ class StockStore:
         elif ds in self._YEAR_WINDOW_DATASETS:
             df = self._read_year_window_dataset(ds, year=None, cache=cache)
             df = _apply_where(df, where)
+            df = _apply_columns_limit_order(df, columns, limit, order_by)
+        elif ds in self._TS_CODE_DATASETS:
+            where_obj = dict(where or {})
+            ts_code = where_obj.pop("ts_code", None)
+            if ts_code is None or not str(ts_code).strip():
+                raise ValueError(f"{ds} requires where.ts_code (or query param ts_code)")
+            ts_code = str(ts_code).strip()
+
+            if ds == "index_daily":
+                df = self._read_ts_code_dataset(
+                    "index_daily",
+                    ts_code=ts_code,
+                    start_date=start_date,
+                    end_date=end_date,
+                    columns=None,  # apply later for consistent where/order/limit behavior
+                    date_column="trade_date",
+                    cache=cache,
+                )
+            elif ds == "dividend":
+                # Dividend data uses end_date as its period column.
+                df = self._read_ts_code_dataset(
+                    "dividend",
+                    ts_code=ts_code,
+                    start_date=start_date,
+                    end_date=end_date,
+                    columns=None,
+                    date_column="end_date",
+                    cache=cache,
+                )
+            elif ds == "fina_audit":
+                df = self._read_ts_code_dataset(
+                    "fina_audit",
+                    ts_code=ts_code,
+                    start_date=start_date,
+                    end_date=end_date,
+                    columns=None,
+                    date_column="end_date",
+                    cache=cache,
+                )
+            elif ds == "fund_nav":
+                df = self._read_ts_code_dataset(
+                    "fund_nav",
+                    ts_code=ts_code,
+                    start_date=start_date,
+                    end_date=end_date,
+                    columns=None,
+                    date_column="nav_date",
+                    cache=cache,
+                )
+            elif ds == "fund_share":
+                df = self._read_ts_code_dataset(
+                    "fund_share",
+                    ts_code=ts_code,
+                    start_date=start_date,
+                    end_date=end_date,
+                    columns=None,
+                    date_column="trade_date",
+                    cache=cache,
+                )
+            elif ds == "fund_div":
+                # fund_div can have null-ish date columns; do not date-filter here.
+                df = self.fund_div(ts_code, columns=None, cache=cache)
+            else:  # pragma: no cover
+                raise ValueError(f"Unknown ts_code dataset: {ds}")
+
+            # Apply remaining where filters (excluding ts_code which is implied by the file).
+            df = _apply_where(df, where_obj or None)
             df = _apply_columns_limit_order(df, columns, limit, order_by)
         elif ds in self._TRADE_DATE_DATASETS:
             expr, params = self._dataset_relation_expr(ds, start_date=start_date, end_date=end_date, exchange=exchange)
@@ -1041,7 +1125,13 @@ class StockStore:
         with self._lock:
             if self._con is None:
                 if os.path.exists(self.duckdb_path):
-                    self._con = duckdb.connect(self.duckdb_path, read_only=True)
+                    try:
+                        # Preferred: reuse the on-disk DuckDB for potential metadata/state.
+                        self._con = duckdb.connect(self.duckdb_path, read_only=True)
+                    except Exception:
+                        # If ingestion is running, DuckDB may hold an exclusive lock.
+                        # Fall back to an in-memory connection so read_parquet queries still work.
+                        self._con = duckdb.connect(":memory:")
                 else:
                     self._con = duckdb.connect(":memory:")
             return self._con
@@ -1068,7 +1158,7 @@ class StockStore:
         )
 
     def _snapshot_path(self, dataset: str, *, exchange: str | None = None) -> str:
-        if dataset in {"stock_basic", "stock_company"}:
+        if dataset in {"stock_basic", "stock_company", "index_basic", "fund_basic", "disclosure_date"}:
             return os.path.join(self.parquet_dir, dataset, "latest.parquet")
         if dataset == "trade_cal":
             ex = (exchange or self.exchange_default).strip()
@@ -1282,6 +1372,23 @@ class StockStore:
         if not os.path.exists(file_path):
             return pd.DataFrame()
 
+        con = self._connect()
+
+        # If the file is an "empty placeholder" (schema only has ts_code), date filters
+        # would error. Detect this cheaply without reading the full file.
+        if start_date is not None or end_date is not None:
+            try:
+                schema_cols = con.execute("SELECT * FROM read_parquet(?) LIMIT 0", [file_path]).fetchdf().columns
+                if date_column not in set(schema_cols):
+                    df = pd.DataFrame()
+                    if cache and self._cache_enabled:
+                        self._cache.set(cache_key, df.copy(), size_bytes=_estimate_df_bytes(df))
+                    return df
+            except Exception:
+                # If schema probing fails for any reason, fall back to the main query
+                # and let DuckDB raise a clearer error.
+                pass
+
         sql_cols = "*" if not columns else ", ".join(_quote_ident(c) for c in columns)
         sql = f"SELECT {sql_cols} FROM read_parquet(?)"
         p = [file_path]
@@ -1300,7 +1407,6 @@ class StockStore:
         
         sql += f" ORDER BY {_quote_ident(date_column)}"
 
-        con = self._connect()
         df = con.execute(sql, p).fetchdf()
 
         if cache and self._cache_enabled:

@@ -79,6 +79,20 @@ def _clamp_limit(limit: int | None, *, default_limit: int, max_limit: int) -> in
     return min(lim, int(max_limit))
 
 
+def _df_to_json_records(df) -> list[dict[str, Any]]:
+    """Convert a DataFrame to JSON-safe records.
+
+    Starlette's JSONResponse is strict (disallows NaN/Infinity). Some datasets
+    (e.g. fund_basic) may contain NaN; use DataFrame.to_json to normalize them
+    to null before returning.
+    """
+    # Import lazily to keep CLI help lightweight.
+    import json as _json
+
+    # pandas DataFrame has to_json; this converts NaN/NaT to null in JSON.
+    return _json.loads(df.to_json(orient="records", date_format="iso"))
+
+
 def _html_index(settings: WebSettings, *, base_url: str) -> str:
         datasets = "\n".join(
                 f"<li><code>{d.name}</code> — {d.desc_zh} <span class=\"muted\">/ {d.desc_en}</span></li>" for d in DATASETS
@@ -152,7 +166,7 @@ curl -s '{base_url}resolve?symbol_or_ts_code=300888.SZ'</pre>
 
             <div class=\"card\">
                 <h3><code>GET /query</code> 通用查询（JSON/CSV）</h3>
-                <div class=\"muted\">必填：<code>dataset</code>。可选：<code>ts_code</code>, <code>symbol</code>, <code>start_date</code>, <code>end_date</code>, <code>exchange</code>, <code>where</code>(JSON), <code>columns</code>, <code>order_by</code>, <code>limit</code>, <code>format</code>, <code>cache</code>。</div>
+                <div class=\"muted\">必填：<code>dataset</code>。可选：<code>ts_code</code>, <code>symbol</code>, <code>start_date</code>, <code>end_date</code>, <code>exchange</code>, <code>where</code>(JSON), <code>columns</code>, <code>order_by</code>, <code>limit</code>, <code>format</code>, <code>cache</code>。<br/>注意：对 <code>index_daily</code>/<code>fund_nav</code>/<code>fund_share</code>/<code>fund_div</code>/<code>dividend</code>/<code>fina_audit</code> 这类按 <code>ts_code</code> 分文件的数据集，必须提供 <code>ts_code</code>（否则无法定位文件）。</div>
 
                 <details open>
                     <summary>1) 全参数（JSON 返回）</summary>
@@ -187,6 +201,29 @@ curl -s '{base_url}resolve?symbol_or_ts_code=300888.SZ'</pre>
     --data-urlencode 'format=csv' \
     --data-urlencode 'cache=true' \
     -o query.csv</pre>
+                </details>
+
+                <details>
+                    <summary>3) 指数日线（index_daily，按 ts_code 文件）</summary>
+                    <pre>curl -G '{base_url}query' \
+    --data-urlencode 'dataset=index_daily' \
+    --data-urlencode 'ts_code=000001.SH' \
+    --data-urlencode 'start_date=20240101' \
+    --data-urlencode 'end_date=20240110' \
+    --data-urlencode 'columns=ts_code,trade_date,close,pct_chg' \
+    --data-urlencode 'order_by=trade_date' \
+    --data-urlencode 'limit=50'</pre>
+                </details>
+
+                <details>
+                    <summary>4) ETF净值（fund_nav，按 ts_code 文件）</summary>
+                    <pre>curl -G '{base_url}query' \
+    --data-urlencode 'dataset=fund_nav' \
+    --data-urlencode 'ts_code=510300.SH' \
+    --data-urlencode 'start_date=20240101' \
+    --data-urlencode 'end_date=20240110' \
+    --data-urlencode 'order_by=nav_date desc' \
+    --data-urlencode 'limit=50'</pre>
                 </details>
             </div>
 
@@ -379,8 +416,199 @@ def create_app(*, settings: WebSettings | None = None) -> FastAPI:
         return {
             "dataset": ds,
             "rows": int(len(df)),
-            "data": df.to_dict(orient="records"),
+            "data": _df_to_json_records(df),
         }
+
+    # -----------------------------
+    # Convenience APIs: index & ETF
+    # -----------------------------
+    @app.get("/index_basic")
+    async def index_basic(
+        limit: int | None = Query(None, description="Row limit"),
+        format: Literal["json", "csv"] = Query("json"),
+        cache: bool = Query(True),
+    ):
+        store: StockStore = app.state.store
+        lim = _clamp_limit(limit, default_limit=settings.default_limit, max_limit=settings.max_limit)
+        df = store.read("index_basic", limit=lim, cache=cache)
+        if format == "csv":
+            return Response(content=df.to_csv(index=False), media_type="text/csv; charset=utf-8")
+        return {"dataset": "index_basic", "rows": int(len(df)), "data": _df_to_json_records(df)}
+
+    @app.get("/index_daily")
+    async def index_daily(
+        ts_code: str = Query(..., description="Index code, e.g. 000001.SH"),
+        start_date: str | None = Query(None, description="YYYYMMDD"),
+        end_date: str | None = Query(None, description="YYYYMMDD"),
+        columns: str | None = Query(None, description="Comma-separated column list"),
+        order_by: str | None = Query(None, description="e.g. trade_date or trade_date desc"),
+        limit: int | None = Query(None, description="Row limit"),
+        format: Literal["json", "csv"] = Query("json"),
+        cache: bool = Query(True),
+    ):
+        store: StockStore = app.state.store
+        lim = _clamp_limit(limit, default_limit=settings.default_limit, max_limit=settings.max_limit)
+        cols = _parse_columns(columns)
+        df = store.read(
+            "index_daily",
+            where={"ts_code": ts_code},
+            start_date=start_date,
+            end_date=end_date,
+            columns=cols,
+            limit=lim,
+            order_by=order_by,
+            cache=cache,
+        )
+        if format == "csv":
+            return Response(content=df.to_csv(index=False), media_type="text/csv; charset=utf-8")
+        return {"dataset": "index_daily", "ts_code": ts_code, "rows": int(len(df)), "data": _df_to_json_records(df)}
+
+    @app.get("/fund_basic")
+    async def fund_basic(
+        limit: int | None = Query(None, description="Row limit"),
+        format: Literal["json", "csv"] = Query("json"),
+        cache: bool = Query(True),
+    ):
+        store: StockStore = app.state.store
+        lim = _clamp_limit(limit, default_limit=settings.default_limit, max_limit=settings.max_limit)
+        df = store.read("fund_basic", limit=lim, cache=cache)
+        if format == "csv":
+            return Response(content=df.to_csv(index=False), media_type="text/csv; charset=utf-8")
+        return {"dataset": "fund_basic", "rows": int(len(df)), "data": _df_to_json_records(df)}
+
+    @app.get("/fund_nav")
+    async def fund_nav(
+        ts_code: str = Query(..., description="ETF code, e.g. 510300.SH"),
+        start_date: str | None = Query(None, description="YYYYMMDD (nav_date)"),
+        end_date: str | None = Query(None, description="YYYYMMDD (nav_date)"),
+        columns: str | None = Query(None, description="Comma-separated column list"),
+        order_by: str | None = Query(None, description="e.g. nav_date or nav_date desc"),
+        limit: int | None = Query(None, description="Row limit"),
+        format: Literal["json", "csv"] = Query("json"),
+        cache: bool = Query(True),
+    ):
+        store: StockStore = app.state.store
+        lim = _clamp_limit(limit, default_limit=settings.default_limit, max_limit=settings.max_limit)
+        cols = _parse_columns(columns)
+        df = store.read(
+            "fund_nav",
+            where={"ts_code": ts_code},
+            start_date=start_date,
+            end_date=end_date,
+            columns=cols,
+            limit=lim,
+            order_by=order_by,
+            cache=cache,
+        )
+        if format == "csv":
+            return Response(content=df.to_csv(index=False), media_type="text/csv; charset=utf-8")
+        return {"dataset": "fund_nav", "ts_code": ts_code, "rows": int(len(df)), "data": _df_to_json_records(df)}
+
+    @app.get("/fund_share")
+    async def fund_share(
+        ts_code: str = Query(..., description="ETF code, e.g. 510300.SH"),
+        start_date: str | None = Query(None, description="YYYYMMDD (trade_date)"),
+        end_date: str | None = Query(None, description="YYYYMMDD (trade_date)"),
+        columns: str | None = Query(None, description="Comma-separated column list"),
+        order_by: str | None = Query(None, description="e.g. trade_date or trade_date desc"),
+        limit: int | None = Query(None, description="Row limit"),
+        format: Literal["json", "csv"] = Query("json"),
+        cache: bool = Query(True),
+    ):
+        store: StockStore = app.state.store
+        lim = _clamp_limit(limit, default_limit=settings.default_limit, max_limit=settings.max_limit)
+        cols = _parse_columns(columns)
+        df = store.read(
+            "fund_share",
+            where={"ts_code": ts_code},
+            start_date=start_date,
+            end_date=end_date,
+            columns=cols,
+            limit=lim,
+            order_by=order_by,
+            cache=cache,
+        )
+        if format == "csv":
+            return Response(content=df.to_csv(index=False), media_type="text/csv; charset=utf-8")
+        return {"dataset": "fund_share", "ts_code": ts_code, "rows": int(len(df)), "data": _df_to_json_records(df)}
+
+    @app.get("/fund_div")
+    async def fund_div(
+        ts_code: str = Query(..., description="ETF code, e.g. 510300.SH"),
+        columns: str | None = Query(None, description="Comma-separated column list"),
+        limit: int | None = Query(None, description="Row limit"),
+        format: Literal["json", "csv"] = Query("json"),
+        cache: bool = Query(True),
+    ):
+        store: StockStore = app.state.store
+        lim = _clamp_limit(limit, default_limit=settings.default_limit, max_limit=settings.max_limit)
+        cols = _parse_columns(columns)
+        df = store.read(
+            "fund_div",
+            where={"ts_code": ts_code},
+            columns=cols,
+            limit=lim,
+            cache=cache,
+        )
+        if format == "csv":
+            return Response(content=df.to_csv(index=False), media_type="text/csv; charset=utf-8")
+        return {"dataset": "fund_div", "ts_code": ts_code, "rows": int(len(df)), "data": _df_to_json_records(df)}
+
+    @app.get("/dividend")
+    async def dividend(
+        ts_code: str = Query(..., description="Stock code, e.g. 000001.SZ"),
+        start_date: str | None = Query(None, description="YYYYMMDD (end_date)"),
+        end_date: str | None = Query(None, description="YYYYMMDD (end_date)"),
+        columns: str | None = Query(None, description="Comma-separated column list"),
+        order_by: str | None = Query(None, description="e.g. end_date or end_date desc"),
+        limit: int | None = Query(None, description="Row limit"),
+        format: Literal["json", "csv"] = Query("json"),
+        cache: bool = Query(True),
+    ):
+        store: StockStore = app.state.store
+        lim = _clamp_limit(limit, default_limit=settings.default_limit, max_limit=settings.max_limit)
+        cols = _parse_columns(columns)
+        df = store.read(
+            "dividend",
+            where={"ts_code": ts_code},
+            start_date=start_date,
+            end_date=end_date,
+            columns=cols,
+            limit=lim,
+            order_by=order_by,
+            cache=cache,
+        )
+        if format == "csv":
+            return Response(content=df.to_csv(index=False), media_type="text/csv; charset=utf-8")
+        return {"dataset": "dividend", "ts_code": ts_code, "rows": int(len(df)), "data": _df_to_json_records(df)}
+
+    @app.get("/fina_audit")
+    async def fina_audit(
+        ts_code: str = Query(..., description="Stock code, e.g. 000001.SZ"),
+        start_date: str | None = Query(None, description="YYYYMMDD (end_date)"),
+        end_date: str | None = Query(None, description="YYYYMMDD (end_date)"),
+        columns: str | None = Query(None, description="Comma-separated column list"),
+        order_by: str | None = Query(None, description="e.g. end_date or end_date desc"),
+        limit: int | None = Query(None, description="Row limit"),
+        format: Literal["json", "csv"] = Query("json"),
+        cache: bool = Query(True),
+    ):
+        store: StockStore = app.state.store
+        lim = _clamp_limit(limit, default_limit=settings.default_limit, max_limit=settings.max_limit)
+        cols = _parse_columns(columns)
+        df = store.read(
+            "fina_audit",
+            where={"ts_code": ts_code},
+            start_date=start_date,
+            end_date=end_date,
+            columns=cols,
+            limit=lim,
+            order_by=order_by,
+            cache=cache,
+        )
+        if format == "csv":
+            return Response(content=df.to_csv(index=False), media_type="text/csv; charset=utf-8")
+        return {"dataset": "fina_audit", "ts_code": ts_code, "rows": int(len(df)), "data": _df_to_json_records(df)}
 
     @app.get("/daily_adj")
     async def daily_adj(
@@ -409,7 +637,7 @@ def create_app(*, settings: WebSettings | None = None) -> FastAPI:
         if format == "csv":
             return Response(content=df.to_csv(index=False), media_type="text/csv; charset=utf-8")
 
-        return {"ts_code": ts_code, "rows": int(len(df)), "data": df.to_dict(orient="records")}
+        return {"ts_code": ts_code, "rows": int(len(df)), "data": _df_to_json_records(df)}
 
     def _store_root() -> Path:
         # Resolve to avoid traversal tricks.
