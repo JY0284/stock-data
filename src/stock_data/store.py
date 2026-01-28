@@ -1374,20 +1374,22 @@ class StockStore:
 
         con = self._connect()
 
-        # If the file is an "empty placeholder" (schema only has ts_code), date filters
-        # would error. Detect this cheaply without reading the full file.
-        if start_date is not None or end_date is not None:
-            try:
-                schema_cols = con.execute("SELECT * FROM read_parquet(?) LIMIT 0", [file_path]).fetchdf().columns
-                if date_column not in set(schema_cols):
-                    df = pd.DataFrame()
-                    if cache and self._cache_enabled:
-                        self._cache.set(cache_key, df.copy(), size_bytes=_estimate_df_bytes(df))
-                    return df
-            except Exception:
-                # If schema probing fails for any reason, fall back to the main query
-                # and let DuckDB raise a clearer error.
-                pass
+        # If the file is an "empty placeholder" (schema only has ts_code), ordering / date
+        # filtering would error. Detect this cheaply without reading the full file.
+        #
+        # NOTE: We probe schema even when no date filters are provided because we still
+        # ORDER BY date_column, which would otherwise raise BinderException.
+        try:
+            schema_cols = con.execute("SELECT * FROM read_parquet(?) LIMIT 0", [file_path]).fetchdf().columns
+            if date_column not in set(schema_cols):
+                df = pd.DataFrame()
+                if cache and self._cache_enabled:
+                    self._cache.set(cache_key, df.copy(), size_bytes=_estimate_df_bytes(df))
+                return df
+        except Exception:
+            # If schema probing fails, fall back to the main query and let DuckDB
+            # raise a clearer error.
+            pass
 
         sql_cols = "*" if not columns else ", ".join(_quote_ident(c) for c in columns)
         sql = f"SELECT {sql_cols} FROM read_parquet(?)"

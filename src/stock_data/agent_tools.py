@@ -88,6 +88,12 @@ def _single_row_payload(df: pd.DataFrame, compact: bool = True) -> dict[str, Any
         row = _clean_row(row)
     return {"found": True, "data": row}
 
+def _sort_desc(df: pd.DataFrame, col: str) -> pd.DataFrame:
+    """Sort descending by a column if present (best-effort)."""
+    if not df.empty and col in df.columns:
+        return df.sort_values(col, ascending=False)
+    return df
+
 
 # -----------------------------------------------------------------------------
 # Identity / Universe
@@ -519,6 +525,412 @@ def get_suspend_d(
 
 
 # -----------------------------------------------------------------------------
+# Index (指数) / ETF (基金) / Finance (财务)
+# -----------------------------------------------------------------------------
+
+def get_index_basic(
+    *,
+    ts_code: str | None = None,
+    name_contains: str | None = None,
+    market: str | None = None,
+    publisher: str | None = None,
+    columns: list[str] | None = None,
+    offset: int = 0,
+    limit: int = 20,
+    store_dir: str = "store",
+) -> dict[str, Any]:
+    """Get index basic info (指数基础信息) with pagination.
+
+    Typical workflow: use this to discover index codes (ts_code), then query `get_index_daily_prices`.
+    """
+    store = _get_store(store_dir)
+    if columns is None:
+        columns = ["ts_code", "name", "market", "publisher", "category", "base_date"]
+
+    df = store.read("index_basic", columns=None)
+    if ts_code is not None and "ts_code" in df.columns:
+        df = df.loc[df["ts_code"] == ts_code]
+    if name_contains and "name" in df.columns:
+        df = df[df["name"].astype(str).str.contains(name_contains, case=False, na=False)]
+    if market is not None and "market" in df.columns:
+        df = df.loc[df["market"] == market]
+    if publisher is not None and "publisher" in df.columns:
+        df = df.loc[df["publisher"] == publisher]
+
+    cols = [c for c in columns if c in df.columns]
+    if cols:
+        df = df[cols]
+    limit = min(limit or 20, 100)
+    return _df_to_payload(df, offset=offset, limit=limit)
+
+
+def get_index_daily_prices(
+    ts_code: str,
+    *,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    columns: list[str] | None = None,
+    offset: int = 0,
+    limit: int = 60,
+    store_dir: str = "store",
+) -> dict[str, Any]:
+    """Get index daily bars for an index (most recent first)."""
+    store = _get_store(store_dir)
+    if columns is None:
+        columns = ["trade_date", "open", "high", "low", "close", "vol", "pct_chg"]
+    df = store.index_daily(ts_code, start_date=start_date, end_date=end_date, columns=None)
+    df = _sort_desc(df, "trade_date")
+    cols = [c for c in columns if c in df.columns]
+    if cols:
+        df = df[cols]
+    limit = min(limit or 60, 500)
+    return _df_to_payload(df, offset=offset, limit=limit)
+
+
+def get_fund_basic(
+    *,
+    ts_code: str | None = None,
+    name_contains: str | None = None,
+    management: str | None = None,
+    fund_type: str | None = None,
+    columns: list[str] | None = None,
+    offset: int = 0,
+    limit: int = 20,
+    store_dir: str = "store",
+) -> dict[str, Any]:
+    """Get ETF/fund basic info (基金基础信息; market=E in tushare) with pagination."""
+    store = _get_store(store_dir)
+    if columns is None:
+        columns = ["ts_code", "name", "management", "fund_type", "status", "found_date", "due_date", "list_date"]
+
+    df = store.read("fund_basic", columns=None)
+    if ts_code is not None and "ts_code" in df.columns:
+        df = df.loc[df["ts_code"] == ts_code]
+    if name_contains and "name" in df.columns:
+        df = df[df["name"].astype(str).str.contains(name_contains, case=False, na=False)]
+    if management is not None and "management" in df.columns:
+        df = df.loc[df["management"] == management]
+    if fund_type is not None and "fund_type" in df.columns:
+        df = df.loc[df["fund_type"] == fund_type]
+
+    cols = [c for c in columns if c in df.columns]
+    if cols:
+        df = df[cols]
+    limit = min(limit or 20, 100)
+    return _df_to_payload(df, offset=offset, limit=limit)
+
+
+def get_etf_daily_prices(
+    ts_code: str,
+    *,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    columns: list[str] | None = None,
+    offset: int = 0,
+    limit: int = 60,
+    store_dir: str = "store",
+) -> dict[str, Any]:
+    """Get ETF daily OHLCV bars from `etf_daily` dataset (most recent first)."""
+    store = _get_store(store_dir)
+    if columns is None:
+        columns = ["trade_date", "open", "high", "low", "close", "vol", "pct_chg", "amount"]
+    df = store.read(
+        "etf_daily",
+        where={"ts_code": ts_code},
+        start_date=start_date,
+        end_date=end_date,
+        columns=None,
+        order_by="trade_date",
+    )
+    df = _sort_desc(df, "trade_date")
+    cols = [c for c in columns if c in df.columns]
+    if cols:
+        df = df[cols]
+    limit = min(limit or 60, 500)
+    return _df_to_payload(df, offset=offset, limit=limit)
+
+
+def get_fund_nav(
+    ts_code: str,
+    *,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    columns: list[str] | None = None,
+    offset: int = 0,
+    limit: int = 60,
+    store_dir: str = "store",
+) -> dict[str, Any]:
+    """Get fund/ETF NAV time series (most recent first)."""
+    store = _get_store(store_dir)
+    if columns is None:
+        columns = ["nav_date", "unit_nav", "accum_nav", "adj_nav"]
+    df = store.fund_nav(ts_code, start_date=start_date, end_date=end_date, columns=None)
+    df = _sort_desc(df, "nav_date")
+    cols = [c for c in columns if c in df.columns]
+    if cols:
+        df = df[cols]
+    limit = min(limit or 60, 500)
+    return _df_to_payload(df, offset=offset, limit=limit)
+
+
+def get_fund_share(
+    ts_code: str,
+    *,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    columns: list[str] | None = None,
+    offset: int = 0,
+    limit: int = 60,
+    store_dir: str = "store",
+) -> dict[str, Any]:
+    """Get fund/ETF shares outstanding history (most recent first)."""
+    store = _get_store(store_dir)
+    if columns is None:
+        columns = ["trade_date", "fd_share", "fund_type"]
+    df = store.fund_share(ts_code, start_date=start_date, end_date=end_date, columns=None)
+    df = _sort_desc(df, "trade_date")
+    cols = [c for c in columns if c in df.columns]
+    if cols:
+        df = df[cols]
+    limit = min(limit or 60, 500)
+    return _df_to_payload(df, offset=offset, limit=limit)
+
+
+def get_fund_div(
+    ts_code: str,
+    *,
+    offset: int = 0,
+    limit: int = 50,
+    store_dir: str = "store",
+) -> dict[str, Any]:
+    """Get fund/ETF dividend distribution history."""
+    store = _get_store(store_dir)
+    df = store.fund_div(ts_code, columns=None)
+    # fund_div may not have stable date columns; keep original order.
+    limit = min(limit or 50, 200)
+    return _df_to_payload(df, offset=offset, limit=limit)
+
+
+def get_income(
+    ts_code: str,
+    *,
+    start_period: str | None = None,
+    end_period: str | None = None,
+    columns: list[str] | None = None,
+    offset: int = 0,
+    limit: int = 20,
+    store_dir: str = "store",
+) -> dict[str, Any]:
+    """Get income statement (利润表) by report period (most recent first)."""
+    store = _get_store(store_dir)
+    df = store.income(ts_code, start_period=start_period, end_period=end_period, columns=None)
+    df = _sort_desc(df, "end_date")
+    if columns:
+        cols = [c for c in columns if c in df.columns]
+        if cols:
+            df = df[cols]
+    limit = min(limit or 20, 200)
+    return _df_to_payload(df, offset=offset, limit=limit)
+
+
+def get_balancesheet(
+    ts_code: str,
+    *,
+    start_period: str | None = None,
+    end_period: str | None = None,
+    columns: list[str] | None = None,
+    offset: int = 0,
+    limit: int = 20,
+    store_dir: str = "store",
+) -> dict[str, Any]:
+    """Get balance sheet (资产负债表) by report period (most recent first)."""
+    store = _get_store(store_dir)
+    df = store.balancesheet(ts_code, start_period=start_period, end_period=end_period, columns=None)
+    df = _sort_desc(df, "end_date")
+    if columns:
+        cols = [c for c in columns if c in df.columns]
+        if cols:
+            df = df[cols]
+    limit = min(limit or 20, 200)
+    return _df_to_payload(df, offset=offset, limit=limit)
+
+
+def get_cashflow(
+    ts_code: str,
+    *,
+    start_period: str | None = None,
+    end_period: str | None = None,
+    columns: list[str] | None = None,
+    offset: int = 0,
+    limit: int = 20,
+    store_dir: str = "store",
+) -> dict[str, Any]:
+    """Get cashflow statement (现金流量表) by report period (most recent first)."""
+    store = _get_store(store_dir)
+    df = store.cashflow(ts_code, start_period=start_period, end_period=end_period, columns=None)
+    df = _sort_desc(df, "end_date")
+    if columns:
+        cols = [c for c in columns if c in df.columns]
+        if cols:
+            df = df[cols]
+    limit = min(limit or 20, 200)
+    return _df_to_payload(df, offset=offset, limit=limit)
+
+
+def get_forecast(
+    ts_code: str,
+    *,
+    start_period: str | None = None,
+    end_period: str | None = None,
+    columns: list[str] | None = None,
+    offset: int = 0,
+    limit: int = 50,
+    store_dir: str = "store",
+) -> dict[str, Any]:
+    """Get earnings forecast (业绩预告) by report period (most recent first)."""
+    store = _get_store(store_dir)
+    df = store.forecast(ts_code, start_period=start_period, end_period=end_period, columns=None)
+    df = _sort_desc(df, "end_date")
+    if columns:
+        cols = [c for c in columns if c in df.columns]
+        if cols:
+            df = df[cols]
+    limit = min(limit or 50, 200)
+    return _df_to_payload(df, offset=offset, limit=limit)
+
+
+def get_express(
+    ts_code: str,
+    *,
+    start_period: str | None = None,
+    end_period: str | None = None,
+    columns: list[str] | None = None,
+    offset: int = 0,
+    limit: int = 50,
+    store_dir: str = "store",
+) -> dict[str, Any]:
+    """Get earnings express (业绩快报) by report period (most recent first)."""
+    store = _get_store(store_dir)
+    df = store.express(ts_code, start_period=start_period, end_period=end_period, columns=None)
+    df = _sort_desc(df, "end_date")
+    if columns:
+        cols = [c for c in columns if c in df.columns]
+        if cols:
+            df = df[cols]
+    limit = min(limit or 50, 200)
+    return _df_to_payload(df, offset=offset, limit=limit)
+
+
+def get_dividend(
+    ts_code: str,
+    *,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    columns: list[str] | None = None,
+    offset: int = 0,
+    limit: int = 50,
+    store_dir: str = "store",
+) -> dict[str, Any]:
+    """Get dividend distribution (分红送股) history (most recent first, best-effort)."""
+    store = _get_store(store_dir)
+    df = store.dividend(ts_code, start_date=start_date, end_date=end_date, columns=None)
+    # Dividend is ordered by end_date ascending in store; show most recent first if possible.
+    df = _sort_desc(df, "end_date")
+    if columns:
+        cols = [c for c in columns if c in df.columns]
+        if cols:
+            df = df[cols]
+    limit = min(limit or 50, 200)
+    return _df_to_payload(df, offset=offset, limit=limit)
+
+
+def get_fina_indicator(
+    ts_code: str,
+    *,
+    start_period: str | None = None,
+    end_period: str | None = None,
+    columns: list[str] | None = None,
+    offset: int = 0,
+    limit: int = 20,
+    store_dir: str = "store",
+) -> dict[str, Any]:
+    """Get financial indicators (财务指标) by report period (most recent first)."""
+    store = _get_store(store_dir)
+    df = store.fina_indicator(ts_code, start_period=start_period, end_period=end_period, columns=None)
+    df = _sort_desc(df, "end_date")
+    if columns:
+        cols = [c for c in columns if c in df.columns]
+        if cols:
+            df = df[cols]
+    limit = min(limit or 20, 200)
+    return _df_to_payload(df, offset=offset, limit=limit)
+
+
+def get_fina_audit(
+    ts_code: str,
+    *,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    columns: list[str] | None = None,
+    offset: int = 0,
+    limit: int = 50,
+    store_dir: str = "store",
+) -> dict[str, Any]:
+    """Get audit opinions (财务审计意见) history."""
+    store = _get_store(store_dir)
+    df = store.fina_audit(ts_code, start_date=start_date, end_date=end_date, columns=None)
+    df = _sort_desc(df, "end_date")
+    if columns:
+        cols = [c for c in columns if c in df.columns]
+        if cols:
+            df = df[cols]
+    limit = min(limit or 50, 200)
+    return _df_to_payload(df, offset=offset, limit=limit)
+
+
+def get_fina_mainbz(
+    ts_code: str,
+    *,
+    start_period: str | None = None,
+    end_period: str | None = None,
+    columns: list[str] | None = None,
+    offset: int = 0,
+    limit: int = 50,
+    store_dir: str = "store",
+) -> dict[str, Any]:
+    """Get main business composition (主营业务构成) by report period (most recent first)."""
+    store = _get_store(store_dir)
+    df = store.fina_mainbz(ts_code, start_period=start_period, end_period=end_period, columns=None)
+    df = _sort_desc(df, "end_date")
+    if columns:
+        cols = [c for c in columns if c in df.columns]
+        if cols:
+            df = df[cols]
+    limit = min(limit or 50, 200)
+    return _df_to_payload(df, offset=offset, limit=limit)
+
+
+def get_disclosure_date(
+    *,
+    ts_code: str | None = None,
+    end_date: str | None = None,
+    offset: int = 0,
+    limit: int = 50,
+    store_dir: str = "store",
+) -> dict[str, Any]:
+    """Get financial report disclosure schedule (财报披露日期表) with pagination."""
+    store = _get_store(store_dir)
+    df = store.read("disclosure_date", columns=None)
+    if ts_code is not None and "ts_code" in df.columns:
+        df = df.loc[df["ts_code"] == ts_code]
+    if end_date is not None and "end_date" in df.columns:
+        df = df.loc[df["end_date"].astype(str) == str(end_date)]
+    df = _sort_desc(df, "end_date")
+    limit = min(limit or 50, 200)
+    return _df_to_payload(df, offset=offset, limit=limit)
+
+
+# -----------------------------------------------------------------------------
 # Search - fuzzy matching for user queries
 # -----------------------------------------------------------------------------
 
@@ -589,7 +1001,10 @@ def query_dataset(
     """Generic dataset query with pagination (escape hatch for advanced queries).
     
     Available datasets: daily, weekly, monthly, daily_basic, adj_factor, 
-    stk_limit, suspend_d, stock_basic, stock_company, trade_cal, new_share, namechange
+    stk_limit, suspend_d, stock_basic, stock_company, trade_cal, new_share, namechange,
+    index_basic, index_daily, etf_daily, fund_basic, fund_nav, fund_share, fund_div,
+    income, balancesheet, cashflow, forecast, express, dividend, fina_indicator, fina_audit, fina_mainbz,
+    disclosure_date
     """
     store = _get_store(store_dir)
     df = store.read(
