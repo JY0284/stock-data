@@ -20,6 +20,30 @@ from stock_data.store import How, ResolvedSymbol, StockStore, open_store
 _store_cache: dict[str, StockStore] = {}
 
 
+def clear_store_cache(store_dir: str | None = None) -> None:
+    """Clear the cached `StockStore` instance(s).
+
+    This is mainly useful for tests (to avoid cross-test leakage) and for long-running
+    agent sessions after the underlying store has been updated.
+
+    Args:
+        store_dir: If provided, clears only that store. Otherwise clears all.
+    """
+    if store_dir is None:
+        stores = list(_store_cache.values())
+        _store_cache.clear()
+    else:
+        s = _store_cache.pop(store_dir, None)
+        stores = [s] if s is not None else []
+
+    for st in stores:
+        try:
+            st.close()
+        except Exception:
+            # Best-effort cleanup.
+            pass
+
+
 def _get_store(store_dir: str = "store") -> StockStore:
     """Get or create a cached StockStore instance."""
     if store_dir not in _store_cache:

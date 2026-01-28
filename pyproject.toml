@@ -16,6 +16,11 @@ dependencies = [
     "tushare>=1.4.24",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+]
+
 [project.scripts]
 stock-data = "stock_data.cli:main"
 
