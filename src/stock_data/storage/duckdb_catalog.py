@@ -76,24 +76,30 @@ class DuckDBCatalog:
                 [dataset, partition_key, status, row_count, error],
             )
 
-    def completed_partitions(self, dataset: str, *, min_row_count: int | None = None) -> set[str]:
+    def completed_partitions(
+        self,
+        dataset: str,
+        *,
+        min_row_count: int | None = None,
+        newer_than_seconds: int | None = None,
+    ) -> set[str]:
         with self.connect() as con:
-            if min_row_count is None:
-                rows = con.execute(
-                    "SELECT partition_key FROM ingestion_state WHERE dataset = ? AND status = 'completed';",
-                    [dataset],
-                ).fetchall()
-            else:
-                rows = con.execute(
-                    """
-                    SELECT partition_key
-                    FROM ingestion_state
-                    WHERE dataset = ?
-                      AND status = 'completed'
-                      AND COALESCE(row_count, 0) >= ?;
-                    """,
-                    [dataset, int(min_row_count)],
-                ).fetchall()
+            conds = ["dataset = ?", "status = 'completed'"]
+            params: list[object] = [dataset]
+
+            if min_row_count is not None:
+                conds.append("COALESCE(row_count, 0) >= ?")
+                params.append(int(min_row_count))
+
+            if newer_than_seconds is not None:
+                conds.append("updated_at >= (NOW() - (? * INTERVAL '1 second'))")
+                params.append(int(newer_than_seconds))
+
+            where = " AND ".join(conds)
+            rows = con.execute(
+                f"SELECT partition_key FROM ingestion_state WHERE {where};",
+                params,
+            ).fetchall()
         return {r[0] for r in rows}
 
     def last_completed_partition(self, dataset: str, *, min_row_count: int | None = None) -> str | None:

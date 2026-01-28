@@ -1157,6 +1157,17 @@ class StockStore:
             f"trade_date={trade_date}.parquet",
         )
 
+    def _end_date_partition_path(self, dataset: str, end_date: str) -> str:
+        d = parse_yyyymmdd(end_date)
+        q = (int(d.month) - 1) // 3 + 1
+        return os.path.join(
+            self.parquet_dir,
+            dataset,
+            f"year={d.year:04d}",
+            f"quarter={q}",
+            f"end_date={end_date}.parquet",
+        )
+
     def _snapshot_path(self, dataset: str, *, exchange: str | None = None) -> str:
         if dataset in {"stock_basic", "stock_company", "index_basic", "fund_basic", "disclosure_date"}:
             return os.path.join(self.parquet_dir, dataset, "latest.parquet")
@@ -1202,6 +1213,9 @@ class StockStore:
             df["cal_date"] = df["cal_date"].astype(str)
         if "pretrade_date" in df.columns:
             df["pretrade_date"] = df["pretrade_date"].astype(str)
+        if "is_open" in df.columns:
+            # Some ingestions store is_open as "1"/"0" strings; normalize to int for callers.
+            df["is_open"] = pd.to_numeric(df["is_open"], errors="coerce").fillna(0).astype(int)
         return df
 
     def _read_year_window_dataset(self, dataset: str, *, year: int | None, cache: bool) -> pd.DataFrame:
@@ -1314,10 +1328,52 @@ class StockStore:
             if hit is not None:
                 return hit.copy()
 
-        # For finance datasets, use glob pattern (simpler than pruning by quarters)
-        glob_path = os.path.join(self.parquet_dir, dataset, "**", "[!.]*.parquet")
+        # For finance datasets, prefer pruning by expected quarter partitions when a period range is given.
         expr = "read_parquet(?, union_by_name=true)"
-        params = [glob_path]
+        params: list[Any]
+        if start_period is not None and end_period is not None:
+            try:
+                s = parse_yyyymmdd(start_period)
+                e = parse_yyyymmdd(end_period)
+
+                def _q_end_date(year: int, q: int) -> _dt.date:
+                    month = q * 3
+                    day = 31 if month in (3, 12) else 30
+                    return _dt.date(year, month, day)
+
+                y = s.year
+                q = (s.month - 1) // 3 + 1
+                cur = _q_end_date(y, q)
+                if cur < s:
+                    q += 1
+                    if q > 4:
+                        q = 1
+                        y += 1
+                    cur = _q_end_date(y, q)
+
+                files: list[str] = []
+                while cur <= e:
+                    ed = cur.strftime("%Y%m%d")
+                    pth = self._end_date_partition_path(dataset, ed)
+                    if os.path.exists(pth):
+                        files.append(pth)
+                    q += 1
+                    if q > 4:
+                        q = 1
+                        y += 1
+                    cur = _q_end_date(y, q)
+
+                if files:
+                    params = [files]
+                else:
+                    glob_path = os.path.join(self.parquet_dir, dataset, "**", "[!.]*.parquet")
+                    params = [glob_path]
+            except Exception:
+                glob_path = os.path.join(self.parquet_dir, dataset, "**", "[!.]*.parquet")
+                params = [glob_path]
+        else:
+            glob_path = os.path.join(self.parquet_dir, dataset, "**", "[!.]*.parquet")
+            params = [glob_path]
         
         sql_cols = "*" if not columns else ", ".join(_quote_ident(c) for c in columns)
         sql = f"SELECT {sql_cols} FROM {expr} WHERE ts_code = ?"

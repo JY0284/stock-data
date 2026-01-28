@@ -104,6 +104,8 @@ def _run_index_daily(
     client: TushareClient,
     catalog: DuckDBCatalog,
     w: ParquetWriter,
+    *,
+    refresh_days: int | None = None,
 ) -> None:
     """Run ingestion for index_daily (one file per index containing full history)."""
     import os
@@ -114,7 +116,11 @@ def _run_index_daily(
     
     # Build tasks: ts_code
     tasks: list[str] = []
-    completed = catalog.completed_partitions("index_daily")
+    refresh_seconds: int | None = None
+    if refresh_days is not None:
+        days = int(refresh_days)
+        refresh_seconds = (days * 24 * 60 * 60) if days > 0 else None
+    completed = catalog.completed_partitions("index_daily", newer_than_seconds=refresh_seconds)
     for code in index_codes:
         key = f"ts_code={code.replace('.', '_')}"
         if key not in completed:
@@ -217,6 +223,7 @@ def run_market(
     datasets: list[str],
     start_date: str | None,
     end_date: str,
+    index_daily_refresh_days: int | None = None,
 ) -> None:
     if not datasets:
         return
@@ -227,7 +234,7 @@ def run_market(
 
     # Handle index_daily separately (ts_code-based)
     if "index_daily" in datasets:
-        _run_index_daily(cfg, client, catalog, w)
+        _run_index_daily(cfg, client, catalog, w, refresh_days=index_daily_refresh_days)
         datasets = [d for d in datasets if d != "index_daily"]
         if not datasets:
             return

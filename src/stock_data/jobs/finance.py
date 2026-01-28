@@ -76,6 +76,8 @@ def _run_ts_code_datasets(
     catalog: DuckDBCatalog,
     w: ParquetWriter,
     datasets: list[str],
+    *,
+    refresh_days: int | None = None,
 ) -> None:
     """Run ingestion for ts_code-based datasets (one file per stock).
     
@@ -90,8 +92,12 @@ def _run_ts_code_datasets(
     
     # Build tasks: (dataset, ts_code)
     tasks: list[tuple[str, str]] = []
+    refresh_seconds: int | None = None
+    if refresh_days is not None:
+        days = int(refresh_days)
+        refresh_seconds = (days * 24 * 60 * 60) if days > 0 else None
     for ds in datasets:
-        completed = catalog.completed_partitions(ds)
+        completed = catalog.completed_partitions(ds, newer_than_seconds=refresh_seconds)
         for code in stock_codes:
             # Partition key uses safe format
             key = f"ts_code={code.replace('.', '_')}"
@@ -222,6 +228,7 @@ def run_finance(
     datasets: list[str],
     start_date: str | None,
     end_date: str,
+    ts_code_refresh_days: int | None = None,
 ) -> None:
     """Run financial data ingestion for VIP endpoints (full-market quarterly data).
     
@@ -258,12 +265,17 @@ def run_finance(
         except Exception as e:  # noqa: BLE001
             catalog.set_state(dataset="disclosure_date", partition_key=key, status="failed", error=str(e))
             logger.exception("finance: disclosure_date failed")
-            raise
 
-    # Handle ts_code-based datasets (dividend, fina_audit)
-    ts_code_to_fetch = [d for d in datasets if d in ts_code_datasets]
-    if ts_code_to_fetch:
-        _run_ts_code_datasets(cfg, client, catalog, w, ts_code_to_fetch)
+    # Handle ts_code datasets (one file per stock)
+    if ts_code_datasets.intersection(datasets):
+        _run_ts_code_datasets(
+            cfg,
+            client,
+            catalog,
+            w,
+            datasets=[d for d in datasets if d in ts_code_datasets],
+            refresh_days=ts_code_refresh_days,
+        )
 
     if not period_datasets:
         return

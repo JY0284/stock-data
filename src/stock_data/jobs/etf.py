@@ -50,6 +50,7 @@ def run_etf(
     token: str,
     catalog: DuckDBCatalog,
     datasets: list[str],
+    refresh_days: int | None = None,
 ) -> None:
     """Run ETF data ingestion for ts_code-based datasets.
     
@@ -67,12 +68,17 @@ def run_etf(
     etf_codes = _get_etf_codes(catalog)
     logger.info("etf: found %d ETF codes", len(etf_codes))
 
+    refresh_seconds: int | None = None
+    if refresh_days is not None:
+        days = int(refresh_days)
+        refresh_seconds = (days * 24 * 60 * 60) if days > 0 else None
+
     # Build tasks: (dataset, ts_code)
     tasks: list[tuple[str, str]] = []
     for ds in datasets:
         if ds not in ETF_DATASETS:
             continue
-        completed = catalog.completed_partitions(ds)
+        completed = catalog.completed_partitions(ds, newer_than_seconds=refresh_seconds)
         for code in etf_codes:
             key = f"ts_code={code.replace('.', '_')}"
             if key not in completed:
