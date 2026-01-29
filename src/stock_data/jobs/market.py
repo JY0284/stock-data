@@ -275,12 +275,23 @@ def run_market(
     dailyish = {"daily", "adj_factor", "daily_basic", "stk_limit", "suspend_d", "etf_daily"}
     # Note: etf_daily is NOT in must_nonempty because ETFs didn't exist before 2004
     must_nonempty = {"daily", "adj_factor", "daily_basic", "weekly", "monthly"}
+
+    def _min_row_count_for(ds: str) -> int | None:
+        # In incremental update mode, treat 0-row partitions as incomplete for etf_daily.
+        # This prevents empty files (often caused by throttling/partial failures) from
+        # blocking future updates.
+        if ds in must_nonempty:
+            return 1
+        if start_date is None and ds == "etf_daily":
+            return 1
+        return None
+
     if start_date is None:
         # incremental: start from the last completed partition per-dataset
         for ds in datasets:
             if ds not in dailyish:
                 continue
-            min_rows = 1 if ds in must_nonempty else None
+            min_rows = _min_row_count_for(ds)
             last = catalog.last_completed_partition(ds, min_row_count=min_rows)
             completed = catalog.completed_partitions(ds, min_row_count=min_rows)
             if not last:
@@ -294,7 +305,7 @@ def run_market(
     else:
         for ds in datasets:
             if ds in dailyish:
-                min_rows = 1 if ds in must_nonempty else None
+                min_rows = _min_row_count_for(ds)
                 completed = catalog.completed_partitions(ds, min_row_count=min_rows)
                 date_map[ds] = [d for d in open_dates if start_date <= d <= effective_end and d not in completed]
 
@@ -416,6 +427,24 @@ def run_market(
 
             if df is None:
                 df = pd.DataFrame()
+
+            # If we're querying for *today* and the upstream hasn't published the data yet,
+            # Tushare often returns an empty frame. Treat this as a normal skip:
+            # - no retries (don't fail the whole run)
+            # - don't write empty parquet partitions
+            # - don't mark as completed (so a later update can pick it up)
+            today = _dt.date.today().strftime("%Y%m%d")
+            if trade_date == today and (getattr(df, "empty", False) or len(getattr(df, "columns", [])) == 0):
+                catalog.set_state(
+                    dataset=dataset,
+                    partition_key=key,
+                    status="skipped",
+                    row_count=0,
+                    error="empty response for today; likely not published yet",
+                )
+                logger.info("market: skipped empty today dataset=%s trade_date=%s", dataset, trade_date)
+                return 0
+
             w.write_trade_date_partition(dataset, trade_date, df)
             catalog.set_state(dataset=dataset, partition_key=key, status="completed", row_count=int(len(df)))
             logger.debug("market: fetch done dataset=%s trade_date=%s rows=%d", dataset, trade_date, int(len(df)))

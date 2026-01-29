@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as _dt
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -66,10 +67,14 @@ class TushareClient:
             # Some endpoints are expected to return non-empty data for open days.
             # If Tushare returns an empty/columnless frame (sometimes happens under
             # throttling/partial failures), treat it as transient so tenacity retries.
-            # Note: fund_daily is NOT included because ETFs didn't exist before 2004.
             if isinstance(df, pd.DataFrame) and (len(df.columns) == 0 or df.empty):
                 if api_name in {"daily", "adj_factor", "daily_basic", "weekly", "monthly"}:
-                    raise TransientError(f"Empty response for api={api_name} params={params}")
+                    trade_date = params.get("trade_date")
+                    today = _dt.date.today().strftime("%Y%m%d")
+                    # For today's trade_date, empty is often normal (data not published yet).
+                    # Do not retry in that case; the scheduler should try again in a later run.
+                    if not (isinstance(trade_date, str) and trade_date == today):
+                        raise TransientError(f"Empty response for api={api_name} params={params}")
 
             return df
         except Exception as e:  # noqa: BLE001 - we map to transient/non-transient
