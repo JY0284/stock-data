@@ -97,7 +97,9 @@ def _get_index_codes(catalog: DuckDBCatalog) -> list[str]:
     # Filter to only major Chinese exchange indices
     major_markets = ["SSE", "SZSE"]
     df = df[df["market"].isin(major_markets)]
-    return df["ts_code"].tolist()
+    codes = df["ts_code"].dropna().astype(str).tolist()
+    # Defensive: index_basic can contain duplicates; avoid double-fetching.
+    return sorted(set(codes))
 
 
 def _run_index_daily(
@@ -117,6 +119,28 @@ def _run_index_daily(
     cal_start = _add_days_yyyymmdd(end_date, -90)
     open_dates = _fetch_open_trade_dates(client, cal_start, end_date)
     effective_end = open_dates[-1] if open_dates else end_date
+
+    def _key(ts_code: str) -> str:
+        return f"ts_code={ts_code.replace('.', '_')}"
+
+    def _recently_attempted_keys(seconds: int | None) -> set[str]:
+        if seconds is None:
+            return set()
+        try:
+            with catalog.connect() as con:
+                rows = con.execute(
+                    """
+                    SELECT partition_key
+                    FROM ingestion_state
+                    WHERE dataset = 'index_daily'
+                      AND status IN ('completed', 'skipped')
+                      AND updated_at >= (NOW() - (? * INTERVAL '1 second'));
+                    """,
+                    [int(seconds)],
+                ).fetchall()
+            return {str(r[0]) for r in rows}
+        except Exception:
+            return set()
 
     def _index_daily_max_trade_date() -> str | None:
         g = catalog.parquet_glob("index_daily")
@@ -172,12 +196,26 @@ def _run_index_daily(
                 logger.exception("market: failed to compute per-code max(trade_date) for index_daily; refreshing all")
                 behind = None
 
-        tasks = sorted(behind) if behind is not None else list(index_codes)
+        # When stalled because upstream hasn't published the latest day yet, repeated
+        # `update` runs can thrash the same codes. Back off per-code for a while.
+        stall_retry_seconds = 2 * 60 * 60
+        try:
+            v = os.environ.get("STOCK_DATA_INDEX_DAILY_STALL_RETRY_SECONDS")
+            if v is not None and str(v).strip() != "":
+                stall_retry_seconds = max(0, int(v))
+        except Exception:
+            stall_retry_seconds = 2 * 60 * 60
+
+        attempted_recent = _recently_attempted_keys(stall_retry_seconds if stall_retry_seconds > 0 else None)
+        raw_tasks = sorted(behind) if behind is not None else list(index_codes)
+        tasks = [c for c in raw_tasks if _key(c) not in attempted_recent]
     else:
-        completed_recent = catalog.completed_partitions("index_daily", newer_than_seconds=refresh_seconds)
+        # Treat both completed and skipped as "recently attempted" so a second
+        # update shortly after doesn't immediately retry empty/stale upstream.
+        attempted_recent = _recently_attempted_keys(refresh_seconds)
         for code in index_codes:
-            key = f"ts_code={code.replace('.', '_')}"
-            if key not in completed_recent:
+            key = _key(code)
+            if key not in attempted_recent:
                 tasks.append(code)
     
     if not tasks:
@@ -195,7 +233,7 @@ def _run_index_daily(
     running_lock = threading.Lock()
     
     def _fetch_and_store(ts_code: str) -> int:
-        key = f"ts_code={ts_code.replace('.', '_')}"
+        key = _key(ts_code)
         catalog.set_state(dataset="index_daily", partition_key=key, status="running")
         with running_lock:
             running.add(ts_code)

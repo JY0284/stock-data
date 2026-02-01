@@ -55,6 +55,7 @@ def backfill(cfg: RunConfig, *, token: str, start_date: str, end_date: str, data
     run_etf(cfg, token=token, catalog=cat, datasets=[d for d in selected if d in etf_datasets])
 
     ensure_derived_views(cat)
+    cat.export_ingestion_state_snapshot()
 
 
 def update(cfg: RunConfig, *, token: str, end_date: str, datasets: str) -> None:
@@ -130,4 +131,5 @@ def update(cfg: RunConfig, *, token: str, end_date: str, datasets: str) -> None:
     )
 
     ensure_derived_views(cat)
+    cat.export_ingestion_state_snapshot()
 

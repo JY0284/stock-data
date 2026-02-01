@@ -4,6 +4,8 @@ import os
 from dataclasses import dataclass
 import re
 
+import pandas as pd
+
 from stock_data.datasets import ALL_DATASET_NAMES
 from stock_data.runner import RunConfig
 
@@ -165,7 +167,29 @@ def _fetch_stats(cfg: RunConfig, dataset: str, *, try_duckdb: bool) -> DatasetSt
     min_p = max_p = None
     total_rows = None
 
-    if try_duckdb and os.path.exists(cfg.duckdb_path):
+    # Prefer parquet snapshot of ingestion_state (non-conflicting with writers).
+    snap = os.path.join(cfg.parquet_dir, "ingestion_state", "latest.parquet")
+    if os.path.exists(snap):
+        try:
+            df = pd.read_parquet(snap)
+            ddf = df.loc[df["dataset"].astype(str) == str(dataset)]
+            by_status = ddf["status"].astype(str).value_counts().to_dict()
+            completed = int(by_status.get("completed", 0))
+            failed = int(by_status.get("failed", 0))
+            running = int(by_status.get("running", 0))
+            completed_rows = ddf.loc[ddf["status"].astype(str) == "completed"]
+            if not completed_rows.empty:
+                ks = completed_rows["partition_key"].astype(str)
+                min_p = str(ks.min()) if len(ks) else None
+                max_p = str(ks.max()) if len(ks) else None
+                if "row_count" in completed_rows.columns:
+                    total_rows = int(pd.to_numeric(completed_rows["row_count"], errors="coerce").fillna(0).sum())
+        except Exception:
+            completed = failed = running = None
+            min_p = max_p = None
+            total_rows = None
+
+    if completed is None and try_duckdb and os.path.exists(cfg.duckdb_path):
         try:
             completed, failed, running, min_p, max_p, total_rows = _fetch_duckdb_stats_readonly(cfg.duckdb_path, dataset)
         except Exception:

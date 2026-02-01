@@ -177,3 +177,41 @@ class DuckDBCatalog:
                 # DuckDB's rowcount support may vary by version.
                 return 0
 
+    def export_ingestion_state_snapshot(self) -> str | None:
+        """Write a parquet snapshot of `ingestion_state` under the parquet root.
+
+        Readers (Store/Query/Stats) can consume this snapshot without ever opening
+        the on-disk DuckDB file.
+
+        Returns:
+            Final parquet path if written, else None.
+        """
+        try:
+            from stock_data.storage.parquet_writer import ParquetWriter
+        except Exception:
+            return None
+
+        writer = ParquetWriter(self.parquet_root)
+        with self.connect() as con:
+            try:
+                df = con.execute(
+                    """
+                    SELECT
+                      dataset,
+                      partition_key,
+                      status,
+                      updated_at,
+                      row_count,
+                      error
+                    FROM ingestion_state
+                    ORDER BY dataset, partition_key;
+                    """
+                ).fetchdf()
+            except Exception:
+                return None
+
+        try:
+            return writer.write_snapshot("ingestion_state", df, name="latest")
+        except Exception:
+            return None
+

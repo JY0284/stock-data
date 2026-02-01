@@ -1124,16 +1124,9 @@ class StockStore:
 
         with self._lock:
             if self._con is None:
-                if os.path.exists(self.duckdb_path):
-                    try:
-                        # Preferred: reuse the on-disk DuckDB for potential metadata/state.
-                        self._con = duckdb.connect(self.duckdb_path, read_only=True)
-                    except Exception:
-                        # If ingestion is running, DuckDB may hold an exclusive lock.
-                        # Fall back to an in-memory connection so read_parquet queries still work.
-                        self._con = duckdb.connect(":memory:")
-                else:
-                    self._con = duckdb.connect(":memory:")
+                # Readers must never open the on-disk DuckDB file.
+                # Use an in-memory DuckDB strictly for parquet queries.
+                self._con = duckdb.connect(":memory:")
             return self._con
 
     def _compute_data_version_hint(self) -> str:

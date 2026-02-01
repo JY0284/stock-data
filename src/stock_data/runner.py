@@ -56,11 +56,17 @@ def run_command(args, *, token: str) -> int:
         return 0
 
     if args.cmd == "query":
-        from stock_data.storage.duckdb_catalog import DuckDBCatalog
+        import duckdb
 
-        cat = DuckDBCatalog(cfg.duckdb_path, cfg.parquet_dir)
-        with cat.connect() as con:
+        from stock_data.storage.parquet_views import register_parquet_views
+
+        # Query must be non-conflicting with writers: never open the on-disk DuckDB.
+        con = duckdb.connect(":memory:")
+        try:
+            register_parquet_views(con, parquet_root=cfg.parquet_dir, also_create_dataset_views=True)
             out = con.execute(args.sql).fetchdf()
+        finally:
+            con.close()
         print(out.to_string(index=False))
         return 0
 
