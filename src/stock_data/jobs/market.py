@@ -3,6 +3,7 @@ from __future__ import annotations
 from bisect import bisect_left
 import datetime as _dt
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import glob
 import logging
 import threading
 import time
@@ -105,11 +106,35 @@ def _run_index_daily(
     catalog: DuckDBCatalog,
     w: ParquetWriter,
     *,
+    end_date: str,
     refresh_days: int | None = None,
 ) -> None:
     """Run ingestion for index_daily (one file per index containing full history)."""
     import os
-    
+
+    # Determine the latest open trading day up to end_date. This is used to
+    # detect stalls where we "refreshed" recently but parquet data is behind.
+    cal_start = _add_days_yyyymmdd(end_date, -90)
+    open_dates = _fetch_open_trade_dates(client, cal_start, end_date)
+    effective_end = open_dates[-1] if open_dates else end_date
+
+    def _index_daily_max_trade_date() -> str | None:
+        g = catalog.parquet_glob("index_daily")
+        if not glob.glob(g, recursive=True):
+            return None
+        try:
+            with catalog.connect() as con:
+                row = con.execute(
+                    f"SELECT MAX(trade_date) FROM read_parquet('{g}', union_by_name=true);"
+                ).fetchone()
+            if not row:
+                return None
+            v = row[0]
+            return str(v) if v is not None and str(v).strip() else None
+        except Exception:
+            logger.exception("market: failed to compute index_daily max(trade_date)")
+            return None
+
     # Get index codes
     index_codes = _get_index_codes(catalog)
     logger.info("market: found %d index codes for index_daily", len(index_codes))
@@ -120,11 +145,40 @@ def _run_index_daily(
     if refresh_days is not None:
         days = int(refresh_days)
         refresh_seconds = (days * 24 * 60 * 60) if days > 0 else None
-    completed = catalog.completed_partitions("index_daily", newer_than_seconds=refresh_seconds)
-    for code in index_codes:
-        key = f"ts_code={code.replace('.', '_')}"
-        if key not in completed:
-            tasks.append(code)
+
+    max_td = _index_daily_max_trade_date()
+    is_stalled = (max_td is None) or (max_td < effective_end)
+    if is_stalled:
+        logger.warning(
+            "market: index_daily appears behind latest open date (max_trade_date=%s effective_end=%s); forcing refresh",
+            max_td or "-",
+            effective_end,
+        )
+
+        # When stalled, DO NOT rely on ingestion_state recency or completion flags.
+        # Those can indicate "completed" while the parquet content is still behind.
+        # Prefer refreshing only codes that are missing/behind; fall back to refresh-all.
+        behind: set[str] | None = None
+        g = catalog.parquet_glob("index_daily")
+        if glob.glob(g, recursive=True):
+            try:
+                with catalog.connect() as con:
+                    rows = con.execute(
+                        f"SELECT ts_code, MAX(trade_date) AS max_td FROM read_parquet('{g}', union_by_name=true) GROUP BY ts_code;"
+                    ).fetchall()
+                max_by_code = {str(ts): (str(td) if td is not None else None) for (ts, td) in rows}
+                behind = {c for c in index_codes if (max_by_code.get(c) is None) or (max_by_code.get(c) < effective_end)}
+            except Exception:
+                logger.exception("market: failed to compute per-code max(trade_date) for index_daily; refreshing all")
+                behind = None
+
+        tasks = sorted(behind) if behind is not None else list(index_codes)
+    else:
+        completed_recent = catalog.completed_partitions("index_daily", newer_than_seconds=refresh_seconds)
+        for code in index_codes:
+            key = f"ts_code={code.replace('.', '_')}"
+            if key not in completed_recent:
+                tasks.append(code)
     
     if not tasks:
         logger.info("market: nothing to do for index_daily")
@@ -153,7 +207,46 @@ def _run_index_daily(
             
             if df is None:
                 df = pd.DataFrame()
+
+            # If upstream returns empty, don't overwrite an existing parquet and don't
+            # mark as completed. Empty responses are common with throttling / transient
+            # upstream issues.
+            if getattr(df, "empty", False):
+                catalog.set_state(
+                    dataset="index_daily",
+                    partition_key=key,
+                    status="skipped",
+                    row_count=0,
+                    error="empty response for index_daily",
+                )
+                logger.warning("market: skipped empty index_daily ts_code=%s", ts_code)
+                return 0
             
+            # Detect stale responses: if upstream returns data that doesn't reach the
+            # latest open trading day, do not overwrite local parquet and do not mark
+            # as completed (so a later update can retry).
+            try:
+                if not df.empty and "trade_date" in df.columns:
+                    resp_max = str(df["trade_date"].astype(str).max())
+                    if resp_max and resp_max < effective_end:
+                        catalog.set_state(
+                            dataset="index_daily",
+                            partition_key=key,
+                            status="skipped",
+                            row_count=0,
+                            error=f"stale index_daily response max_trade_date={resp_max} < effective_end={effective_end}",
+                        )
+                        logger.warning(
+                            "market: skipped stale index_daily ts_code=%s (max_trade_date=%s effective_end=%s)",
+                            ts_code,
+                            resp_max,
+                            effective_end,
+                        )
+                        return 0
+            except Exception:
+                # If schema is unexpected, proceed to write anyway.
+                pass
+
             w.write_ts_code_partition("index_daily", ts_code, df)
             catalog.set_state(dataset="index_daily", partition_key=key, status="completed", row_count=int(len(df)))
             logger.debug("market: fetch done index_daily ts_code=%s rows=%d", ts_code, int(len(df)))
@@ -234,7 +327,7 @@ def run_market(
 
     # Handle index_daily separately (ts_code-based)
     if "index_daily" in datasets:
-        _run_index_daily(cfg, client, catalog, w, refresh_days=index_daily_refresh_days)
+        _run_index_daily(cfg, client, catalog, w, end_date=end_date, refresh_days=index_daily_refresh_days)
         datasets = [d for d in datasets if d != "index_daily"]
         if not datasets:
             return

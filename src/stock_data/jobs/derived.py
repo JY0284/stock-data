@@ -19,7 +19,8 @@ def ensure_derived_views(catalog: DuckDBCatalog) -> None:
     Creates convenience DuckDB views over parquet datasets, including qfq/hfq derived prices.
     Safe to call repeatedly.
     """
-    # Convenience base views (created if parquet exists).
+    # Convenience parquet-backed views (created if parquet exists).
+    # These are views only (no ingestion into DuckDB tables).
     base_datasets = [
         "daily",
         "adj_factor",
@@ -28,8 +29,10 @@ def ensure_derived_views(catalog: DuckDBCatalog) -> None:
         "suspend_d",
         "weekly",
         "monthly",
+        # ETF daily bars are trade-date partitioned.
+        "etf_daily",
     ]
-    
+
     # Finance datasets (report-period partitioned)
     finance_datasets = [
         "income",
@@ -37,21 +40,50 @@ def ensure_derived_views(catalog: DuckDBCatalog) -> None:
         "cashflow",
         "forecast",
         "express",
-        "dividend",
         "fina_indicator",
-        "fina_audit",
         "fina_mainbz",
+    ]
+
+    # Snapshots written as single files under <dataset>/<name>.parquet
+    # (or a small number of files).
+    snapshot_datasets = [
+        "stock_basic",
+        "trade_cal",
+        "stock_company",
+        "index_basic",
+        "fund_basic",
+        "disclosure_date",
+    ]
+
+    # Windowed snapshot datasets (one file per year).
+    windowed_snapshot_datasets = [
+        "new_share",
+        "namechange",
+    ]
+
+    # ts_code-partitioned datasets (one parquet per code).
+    ts_code_datasets = [
+        "index_daily",
+        "dividend",
+        "fina_audit",
+        "fund_nav",
+        "fund_share",
+        "fund_div",
     ]
 
     exists: dict[str, bool] = {}
     globs: dict[str, str] = {}
-    for ds in base_datasets + finance_datasets:
+    all_view_datasets = (
+        base_datasets
+        + finance_datasets
+        + snapshot_datasets
+        + windowed_snapshot_datasets
+        + ts_code_datasets
+    )
+    for ds in all_view_datasets:
         g = catalog.parquet_glob(ds)
         globs[ds] = g
         exists[ds] = _has_any_parquet(g)
-
-    if not (exists["daily"] and exists["adj_factor"]):
-        return
 
     with catalog.connect() as con:
         # 1) Base parquet-backed views. These should never make the pipeline fail.
@@ -70,7 +102,25 @@ def ensure_derived_views(catalog: DuckDBCatalog) -> None:
                 f"CREATE OR REPLACE VIEW v_{ds} AS SELECT * FROM read_parquet('{globs[ds]}', union_by_name=true);"
             )
 
+        # 1c) Snapshot and windowed snapshots (trade_cal, stock_basic, ...)
+        for ds in snapshot_datasets + windowed_snapshot_datasets:
+            if not exists[ds]:
+                continue
+            con.execute(
+                f"CREATE OR REPLACE VIEW v_{ds} AS SELECT * FROM read_parquet('{globs[ds]}', union_by_name=true);"
+            )
+
+        # 1d) ts_code-partitioned datasets
+        for ds in ts_code_datasets:
+            if not exists[ds]:
+                continue
+            con.execute(
+                f"CREATE OR REPLACE VIEW v_{ds} AS SELECT * FROM read_parquet('{globs[ds]}', union_by_name=true);"
+            )
+
         # 2) Derived qfq/hfq view. This is a convenience; skip if schema isn't ready.
+        if not (exists.get("daily") and exists.get("adj_factor")):
+            return
         try:
             daily_cols = {r[0] for r in con.execute("SELECT name FROM pragma_table_info('v_daily')").fetchall()}
             adj_cols = {r[0] for r in con.execute("SELECT name FROM pragma_table_info('v_adj_factor')").fetchall()}
