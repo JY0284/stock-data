@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 import re
+from typing import Any
 
 import pandas as pd
 
@@ -213,6 +214,28 @@ def _fetch_stats(cfg: RunConfig, dataset: str, *, try_duckdb: bool) -> DatasetSt
         parquet_files=parquet_files,
         parquet_bytes=int(parquet_bytes),
     )
+
+
+def fetch_stats_json(cfg: RunConfig, *, datasets: str = "all") -> list[dict[str, Any]]:
+    """Return dataset stats as JSON-serializable list of dicts."""
+    selected = _parse_datasets(datasets)
+    try_duckdb = True
+    stats = [_fetch_stats(cfg, ds, try_duckdb=try_duckdb) for ds in selected]
+
+    out: list[dict[str, Any]] = []
+    for s in stats:
+        out.append({
+            "dataset": s.dataset,
+            "min_partition": s.min_partition,
+            "max_partition": s.max_partition,
+            "total_rows": s.total_rows,
+            "completed": s.completed,
+            "failed": s.failed,
+            "running": s.running,
+            "parquet_files": s.parquet_files,
+            "parquet_bytes": s.parquet_bytes,
+        })
+    return out
 
 
 def print_stats(cfg: RunConfig, *, datasets: str = "all") -> None:

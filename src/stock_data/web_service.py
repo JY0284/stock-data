@@ -13,6 +13,8 @@ from fastapi import FastAPI, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 
 from stock_data.datasets import DATASETS, ALL_DATASET_NAMES, dataset_info_map
+from stock_data.runner import RunConfig
+from stock_data.stats import fetch_stats_json
 from stock_data.store import StockStore, open_store
 
 
@@ -358,6 +360,16 @@ def create_app(*, settings: WebSettings | None = None) -> FastAPI:
             "parquet_dir": store.parquet_dir,
             "parquet_exists": parquet_exists,
             "time": int(time.time()),
+        }
+
+    @app.get("/stat")
+    async def stat(datasets: str = Query("all", description="Comma-separated dataset names or 'all'")):
+        cfg = RunConfig(store_dir=settings.store_dir, rpm=500, workers=12)
+        datasets_list = fetch_stats_json(cfg, datasets=datasets)
+        return {
+            "datasets": datasets_list,
+            "count": len(datasets_list),
+            "generated_at": int(time.time()),
         }
 
     @app.get("/datasets")
