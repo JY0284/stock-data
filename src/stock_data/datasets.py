@@ -247,6 +247,40 @@ DATASETS: list[DatasetInfo] = [
         desc_en="Financial report disclosure date schedule (财报披露日期表) for all listed companies.",
         desc_zh="财报披露日期表（全市场上市公司财报披露日期）。",
     ),
+
+    # Macro (国内宏观) datasets
+    DatasetInfo(
+        name="lpr",
+        category="macro",
+        partitioning="snapshot",
+        source="tushare: shibor_lpr",
+        desc_en="Loan Prime Rate (LPR) time series (stored as a single snapshot parquet).",
+        desc_zh="贷款市场报价利率 LPR 时间序列（单文件快照存储）。",
+    ),
+    DatasetInfo(
+        name="cpi",
+        category="macro",
+        partitioning="snapshot",
+        source="tushare: cn_cpi",
+        desc_en="China CPI time series (stored as a single snapshot parquet).",
+        desc_zh="中国 CPI 时间序列（单文件快照存储）。",
+    ),
+    DatasetInfo(
+        name="cn_sf",
+        category="macro",
+        partitioning="snapshot",
+        source="tushare: sf_month",
+        desc_en="China social financing (社融) time series (stored as a single snapshot parquet).",
+        desc_zh="中国社融时间序列（单文件快照存储）。",
+    ),
+    DatasetInfo(
+        name="cn_m",
+        category="macro",
+        partitioning="snapshot",
+        source="tushare: cn_m",
+        desc_en="China money supply (货币供应量) time series (stored as a single snapshot parquet).",
+        desc_zh="中国货币供应量时间序列（单文件快照存储）。",
+    ),
 ]
 
 

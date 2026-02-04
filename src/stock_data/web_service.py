@@ -16,6 +16,9 @@ from stock_data.datasets import DATASETS, ALL_DATASET_NAMES, dataset_info_map
 from stock_data.store import StockStore, open_store
 
 
+MacroDataset = Literal["lpr", "cpi", "cn_sf", "cn_m"]
+
+
 @dataclass(frozen=True)
 class WebSettings:
     store_dir: str = os.environ.get("STOCK_DATA_STORE_DIR", "store")
@@ -256,6 +259,21 @@ curl -s '{base_url}resolve?symbol_or_ts_code=300888.SZ'</pre>
     --data-urlencode 'format=csv' \
     --data-urlencode 'cache=true' \
     -o daily_adj.csv</pre>
+                </details>
+            </div>
+
+            <div class=\"card\">
+                <h3><code>GET /macro/&lt;dataset&gt;</code> 宏观数据（快照）</h3>
+                <div class=\"muted\">支持：<code>lpr</code>, <code>cpi</code>, <code>cn_sf</code>, <code>cn_m</code>。可选：<code>where</code>(JSON), <code>columns</code>, <code>order_by</code>, <code>limit</code>, <code>format</code>, <code>cache</code>。</div>
+                <details open>
+                    <summary>全参数示例（LPR）</summary>
+                    <pre>curl -G '{base_url}macro/lpr' \
+    --data-urlencode 'where={{"date":"20260102"}}' \
+    --data-urlencode 'columns=date,1y,5y' \
+    --data-urlencode 'order_by=date desc' \
+    --data-urlencode 'limit=50' \
+    --data-urlencode 'format=json' \
+    --data-urlencode 'cache=true'</pre>
                 </details>
             </div>
         </div>
@@ -638,6 +656,45 @@ def create_app(*, settings: WebSettings | None = None) -> FastAPI:
             return Response(content=df.to_csv(index=False), media_type="text/csv; charset=utf-8")
 
         return {"ts_code": ts_code, "rows": int(len(df)), "data": _df_to_json_records(df)}
+
+    # -----------------------------
+    # Convenience APIs: macro
+    # -----------------------------
+    @app.get("/macro")
+    async def macro_list():
+        # Keep this explicit to avoid confusion with future macro expansions.
+        return {
+            "datasets": ["lpr", "cpi", "cn_sf", "cn_m"],
+            "count": 4,
+        }
+
+    @app.get("/macro/{dataset}")
+    async def macro_dataset(
+        dataset: MacroDataset,
+        where: str | None = Query(None, description="Additional filters as JSON object"),
+        columns: str | None = Query(None, description="Comma-separated column list"),
+        order_by: str | None = Query(None, description="e.g. date desc or month desc"),
+        limit: int | None = Query(None, description="Row limit"),
+        format: Literal["json", "csv"] = Query("json"),
+        cache: bool = Query(True),
+    ):
+        store: StockStore = app.state.store
+        lim = _clamp_limit(limit, default_limit=settings.default_limit, max_limit=settings.max_limit)
+        cols = _parse_columns(columns)
+        where_obj = _parse_where_json(where)
+
+        df = store.read(
+            dataset,
+            where=where_obj or None,
+            columns=cols,
+            limit=lim,
+            order_by=order_by,
+            cache=cache,
+        )
+
+        if format == "csv":
+            return Response(content=df.to_csv(index=False), media_type="text/csv; charset=utf-8")
+        return {"dataset": dataset, "rows": int(len(df)), "data": _df_to_json_records(df)}
 
     def _store_root() -> Path:
         # Resolve to avoid traversal tricks.

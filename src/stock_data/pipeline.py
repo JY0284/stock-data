@@ -24,6 +24,7 @@ def backfill(cfg: RunConfig, *, token: str, start_date: str, end_date: str, data
 
     from stock_data.storage.duckdb_catalog import DuckDBCatalog
     from stock_data.jobs.basic import run_basic
+    from stock_data.jobs.macro import run_macro
     from stock_data.jobs.market import run_market
     from stock_data.jobs.finance import run_finance
     from stock_data.jobs.etf import run_etf
@@ -38,12 +39,16 @@ def backfill(cfg: RunConfig, *, token: str, start_date: str, end_date: str, data
 
     # Define dataset categories
     basic_datasets = {"stock_basic", "trade_cal", "stock_company", "index_basic", "fund_basic", "new_share", "namechange"}
+    macro_datasets = {"lpr", "cpi", "cn_sf", "cn_m"}
     finance_datasets = {"income", "balancesheet", "cashflow", "forecast", "express", "dividend", "fina_indicator", "fina_audit", "fina_mainbz", "disclosure_date"}
     etf_datasets = {"fund_nav", "fund_share", "fund_div"}
-    market_datasets = [d for d in selected if d not in basic_datasets and d not in finance_datasets and d not in etf_datasets]
+    market_datasets = [d for d in selected if d not in basic_datasets and d not in macro_datasets and d not in finance_datasets and d not in etf_datasets]
 
     # Basic first (universe + calendar).
     run_basic(cfg, token=token, catalog=cat, datasets=[d for d in selected if d in basic_datasets], start_date=start_date, end_date=end_date)
+
+    # Macro snapshots.
+    run_macro(cfg, token=token, catalog=cat, datasets=[d for d in selected if d in macro_datasets], start_date=start_date, end_date=end_date)
 
     # Market (uses trade_cal and is date-partitioned).
     run_market(cfg, token=token, catalog=cat, datasets=market_datasets, start_date=start_date, end_date=end_date)
@@ -64,6 +69,7 @@ def update(cfg: RunConfig, *, token: str, end_date: str, datasets: str) -> None:
 
     from stock_data.storage.duckdb_catalog import DuckDBCatalog
     from stock_data.jobs.basic import run_basic
+    from stock_data.jobs.macro import run_macro
     from stock_data.jobs.market import run_market
     from stock_data.jobs.finance import run_finance
     from stock_data.jobs.etf import run_etf
@@ -78,12 +84,16 @@ def update(cfg: RunConfig, *, token: str, end_date: str, datasets: str) -> None:
 
     # Define dataset categories
     basic_datasets = {"stock_basic", "trade_cal", "stock_company", "index_basic", "fund_basic", "new_share", "namechange"}
+    macro_datasets = {"lpr", "cpi", "cn_sf", "cn_m"}
     finance_datasets = {"income", "balancesheet", "cashflow", "forecast", "express", "dividend", "fina_indicator", "fina_audit", "fina_mainbz", "disclosure_date"}
     etf_datasets = {"fund_nav", "fund_share", "fund_div"}
-    market_datasets = [d for d in selected if d not in basic_datasets and d not in finance_datasets and d not in etf_datasets]
+    market_datasets = [d for d in selected if d not in basic_datasets and d not in macro_datasets and d not in finance_datasets and d not in etf_datasets]
 
     # Basic refresh (cheap snapshots).
     run_basic(cfg, token=token, catalog=cat, datasets=[d for d in selected if d in basic_datasets], start_date=None, end_date=end_date)
+
+    # Macro snapshots.
+    run_macro(cfg, token=token, catalog=cat, datasets=[d for d in selected if d in macro_datasets], start_date=None, end_date=end_date)
 
     # Refresh policy for ts_code-partitioned datasets (ETF, dividend, fina_audit, index_daily).
     # These endpoints return full history for a code, but data keeps growing; without periodic

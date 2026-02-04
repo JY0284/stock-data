@@ -123,6 +123,11 @@ class StockStore:
         "index_basic",
         "fund_basic",
         "disclosure_date",
+        # Macro snapshots.
+        "lpr",
+        "cpi",
+        "cn_sf",
+        "cn_m",
     }
 
     # Windowed-by-year datasets in this repo.
@@ -1162,7 +1167,17 @@ class StockStore:
         )
 
     def _snapshot_path(self, dataset: str, *, exchange: str | None = None) -> str:
-        if dataset in {"stock_basic", "stock_company", "index_basic", "fund_basic", "disclosure_date"}:
+        if dataset in {
+            "stock_basic",
+            "stock_company",
+            "index_basic",
+            "fund_basic",
+            "disclosure_date",
+            "lpr",
+            "cpi",
+            "cn_sf",
+            "cn_m",
+        }:
             return os.path.join(self.parquet_dir, dataset, "latest.parquet")
         if dataset == "trade_cal":
             ex = (exchange or self.exchange_default).strip()

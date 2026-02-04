@@ -5,6 +5,14 @@ Each function is designed to be:
 - Return JSON-serializable dict/list outputs
 - Support pagination via `offset` and `limit` for progressive navigation
 - Return clean, compact responses (nulls removed, metadata included)
+
+Date formats (important):
+- Trading dates / calendar dates: YYYYMMDD (e.g. 20260204)
+- Monthly macro series: YYYYMM (e.g. 202601)
+- Report periods (财报口径): YYYYMMDD, usually period end date (e.g. 20251231)
+
+Unless a docstring says otherwise, parameters named `date`, `start_date`, `end_date`,
+`start_period`, `end_period` follow the conventions above.
 """
 
 from __future__ import annotations
@@ -116,6 +124,33 @@ def _sort_desc(df: pd.DataFrame, col: str) -> pd.DataFrame:
     """Sort descending by a column if present (best-effort)."""
     if not df.empty and col in df.columns:
         return df.sort_values(col, ascending=False)
+    return df
+
+
+def _filter_range_str(
+    df: pd.DataFrame,
+    *,
+    col: str,
+    start: str | None,
+    end: str | None,
+) -> pd.DataFrame:
+    """Best-effort inclusive range filtering on a string-like date column.
+
+    Works for formats that are lexicographically sortable, e.g. YYYYMMDD or YYYYMM.
+    """
+    if df.empty or col not in df.columns:
+        return df
+    if start is None and end is None:
+        return df
+
+    s = df[col].astype(str)
+    if start is not None:
+        s0 = str(start)
+        df = df.loc[s >= s0]
+        s = s.loc[df.index]
+    if end is not None:
+        s1 = str(end)
+        df = df.loc[s <= s1]
     return df
 
 
@@ -273,7 +308,10 @@ def get_trading_days(
     exchange: str | None = None,
     store_dir: str = "store",
 ) -> dict[str, Any]:
-    """Get list of trading days in a date range."""
+    """Get list of trading days in a date range.
+
+    Date format: YYYYMMDD.
+    """
     store = _get_store(store_dir)
     days = store.trading_days(start_date, end_date, exchange=exchange)
     return {"trading_days": days, "count": len(days)}
@@ -285,7 +323,10 @@ def is_trading_day(
     exchange: str | None = None,
     store_dir: str = "store",
 ) -> dict[str, Any]:
-    """Check if a date is a trading day."""
+    """Check if a date is a trading day.
+
+    Date format: YYYYMMDD.
+    """
     store = _get_store(store_dir)
     result = store.is_trading_day(date, exchange=exchange)
     return {"date": date, "is_trading_day": result}
@@ -297,7 +338,10 @@ def get_prev_trade_date(
     exchange: str | None = None,
     store_dir: str = "store",
 ) -> dict[str, Any]:
-    """Get the previous trading day before a date."""
+    """Get the previous trading day before a date.
+
+    Date format: YYYYMMDD.
+    """
     store = _get_store(store_dir)
     result = store.prev_trade_date(date, exchange=exchange)
     return {"date": date, "prev_trade_date": result}
@@ -309,7 +353,10 @@ def get_next_trade_date(
     exchange: str | None = None,
     store_dir: str = "store",
 ) -> dict[str, Any]:
-    """Get the next trading day after a date."""
+    """Get the next trading day after a date.
+
+    Date format: YYYYMMDD.
+    """
     store = _get_store(store_dir)
     result = store.next_trade_date(date, exchange=exchange)
     return {"date": date, "next_trade_date": result}
@@ -330,7 +377,10 @@ def get_new_share(
     limit: int = 20,
     store_dir: str = "store",
 ) -> dict[str, Any]:
-    """Get IPO / new share info with pagination."""
+    """Get IPO / new share info with pagination.
+
+    Date format: YYYYMMDD for `start_date`/`end_date`.
+    """
     store = _get_store(store_dir)
     df = store.new_share(
         year=year,
@@ -350,7 +400,10 @@ def get_namechange(
     end_date: str | None = None,
     store_dir: str = "store",
 ) -> dict[str, Any]:
-    """Get name change history for a stock."""
+    """Get name change history for a stock.
+
+    Date format: YYYYMMDD for `start_date`/`end_date`.
+    """
     store = _get_store(store_dir)
     df = store.namechange(ts_code=ts_code, start_date=start_date, end_date=end_date)
     return _df_to_payload(df)
@@ -374,6 +427,8 @@ def get_daily_prices(
     
     Default columns: trade_date, open, high, low, close, vol, pct_chg
     Data is sorted by trade_date descending (most recent first).
+
+    Date format: YYYYMMDD for `start_date`/`end_date`.
     """
     store = _get_store(store_dir)
     if columns is None:
@@ -402,7 +457,10 @@ def get_adj_factor(
     limit: int = 30,
     store_dir: str = "store",
 ) -> dict[str, Any]:
-    """Get adjustment factors for a stock."""
+    """Get adjustment factors for a stock.
+
+    Date format: YYYYMMDD for `start_date`/`end_date`.
+    """
     store = _get_store(store_dir)
     df = store.adj_factor(ts_code, start_date=start_date, end_date=end_date)
     if "trade_date" in df.columns:
@@ -424,6 +482,8 @@ def get_daily_basic(
     """Get daily valuation metrics (PE, PB, market cap, etc.) with pagination.
     
     Default columns: trade_date, pe_ttm, pb, total_mv, circ_mv, turnover_rate
+
+    Date format: YYYYMMDD for `start_date`/`end_date`.
     """
     store = _get_store(store_dir)
     if columns is None:
@@ -451,7 +511,10 @@ def get_daily_adj_prices(
     limit: int = 30,
     store_dir: str = "store",
 ) -> dict[str, Any]:
-    """Get adjusted daily prices (qfq=forward, hfq=backward, both=all)."""
+    """Get adjusted daily prices (qfq=forward, hfq=backward, both=all).
+
+    Date format: YYYYMMDD for `start_date`/`end_date`.
+    """
     store = _get_store(store_dir)
     df = store.daily_adj(ts_code, start_date=start_date, end_date=end_date, how=how)
     if "trade_date" in df.columns:
@@ -470,7 +533,10 @@ def get_weekly_prices(
     limit: int = 20,
     store_dir: str = "store",
 ) -> dict[str, Any]:
-    """Get weekly OHLCV prices for a stock."""
+    """Get weekly OHLCV prices for a stock.
+
+    Date format: YYYYMMDD for `start_date`/`end_date`.
+    """
     store = _get_store(store_dir)
     if columns is None:
         columns = ["trade_date", "open", "high", "low", "close", "vol", "pct_chg"]
@@ -497,7 +563,10 @@ def get_monthly_prices(
     limit: int = 12,
     store_dir: str = "store",
 ) -> dict[str, Any]:
-    """Get monthly OHLCV prices for a stock."""
+    """Get monthly OHLCV prices for a stock.
+
+    Date format: YYYYMMDD for `start_date`/`end_date`.
+    """
     store = _get_store(store_dir)
     if columns is None:
         columns = ["trade_date", "open", "high", "low", "close", "vol", "pct_chg"]
@@ -598,7 +667,10 @@ def get_index_daily_prices(
     limit: int = 60,
     store_dir: str = "store",
 ) -> dict[str, Any]:
-    """Get index daily bars for an index (most recent first)."""
+    """Get index daily bars for an index (most recent first).
+
+    Date format: YYYYMMDD for `start_date`/`end_date`.
+    """
     store = _get_store(store_dir)
     if columns is None:
         columns = ["trade_date", "open", "high", "low", "close", "vol", "pct_chg"]
@@ -684,7 +756,10 @@ def get_fund_nav(
     limit: int = 60,
     store_dir: str = "store",
 ) -> dict[str, Any]:
-    """Get fund/ETF NAV time series (most recent first)."""
+    """Get fund/ETF NAV time series (most recent first).
+
+    Date format: YYYYMMDD for `start_date`/`end_date` (nav_date).
+    """
     store = _get_store(store_dir)
     if columns is None:
         columns = ["nav_date", "unit_nav", "accum_nav", "adj_nav"]
@@ -707,7 +782,10 @@ def get_fund_share(
     limit: int = 60,
     store_dir: str = "store",
 ) -> dict[str, Any]:
-    """Get fund/ETF shares outstanding history (most recent first)."""
+    """Get fund/ETF shares outstanding history (most recent first).
+
+    Date format: YYYYMMDD for `start_date`/`end_date` (trade_date).
+    """
     store = _get_store(store_dir)
     if columns is None:
         columns = ["trade_date", "fd_share", "fund_type"]
@@ -745,7 +823,10 @@ def get_income(
     limit: int = 20,
     store_dir: str = "store",
 ) -> dict[str, Any]:
-    """Get income statement (利润表) by report period (most recent first)."""
+    """Get income statement (利润表) by report period (most recent first).
+
+    Date format: YYYYMMDD for `start_period`/`end_period` (report period end_date).
+    """
     store = _get_store(store_dir)
     df = store.income(ts_code, start_period=start_period, end_period=end_period, columns=None)
     df = _sort_desc(df, "end_date")
@@ -767,7 +848,10 @@ def get_balancesheet(
     limit: int = 20,
     store_dir: str = "store",
 ) -> dict[str, Any]:
-    """Get balance sheet (资产负债表) by report period (most recent first)."""
+    """Get balance sheet (资产负债表) by report period (most recent first).
+
+    Date format: YYYYMMDD for `start_period`/`end_period` (report period end_date).
+    """
     store = _get_store(store_dir)
     df = store.balancesheet(ts_code, start_period=start_period, end_period=end_period, columns=None)
     df = _sort_desc(df, "end_date")
@@ -789,7 +873,10 @@ def get_cashflow(
     limit: int = 20,
     store_dir: str = "store",
 ) -> dict[str, Any]:
-    """Get cashflow statement (现金流量表) by report period (most recent first)."""
+    """Get cashflow statement (现金流量表) by report period (most recent first).
+
+    Date format: YYYYMMDD for `start_period`/`end_period` (report period end_date).
+    """
     store = _get_store(store_dir)
     df = store.cashflow(ts_code, start_period=start_period, end_period=end_period, columns=None)
     df = _sort_desc(df, "end_date")
@@ -811,7 +898,10 @@ def get_forecast(
     limit: int = 50,
     store_dir: str = "store",
 ) -> dict[str, Any]:
-    """Get earnings forecast (业绩预告) by report period (most recent first)."""
+    """Get earnings forecast (业绩预告) by report period (most recent first).
+
+    Date format: YYYYMMDD for `start_period`/`end_period` (report period end_date).
+    """
     store = _get_store(store_dir)
     df = store.forecast(ts_code, start_period=start_period, end_period=end_period, columns=None)
     df = _sort_desc(df, "end_date")
@@ -833,7 +923,10 @@ def get_express(
     limit: int = 50,
     store_dir: str = "store",
 ) -> dict[str, Any]:
-    """Get earnings express (业绩快报) by report period (most recent first)."""
+    """Get earnings express (业绩快报) by report period (most recent first).
+
+    Date format: YYYYMMDD for `start_period`/`end_period` (report period end_date).
+    """
     store = _get_store(store_dir)
     df = store.express(ts_code, start_period=start_period, end_period=end_period, columns=None)
     df = _sort_desc(df, "end_date")
@@ -855,7 +948,10 @@ def get_dividend(
     limit: int = 50,
     store_dir: str = "store",
 ) -> dict[str, Any]:
-    """Get dividend distribution (分红送股) history (most recent first, best-effort)."""
+    """Get dividend distribution (分红送股) history (most recent first, best-effort).
+
+    Date format: YYYYMMDD for `start_date`/`end_date` (end_date column).
+    """
     store = _get_store(store_dir)
     df = store.dividend(ts_code, start_date=start_date, end_date=end_date, columns=None)
     # Dividend is ordered by end_date ascending in store; show most recent first if possible.
@@ -878,7 +974,10 @@ def get_fina_indicator(
     limit: int = 20,
     store_dir: str = "store",
 ) -> dict[str, Any]:
-    """Get financial indicators (财务指标) by report period (most recent first)."""
+    """Get financial indicators (财务指标) by report period (most recent first).
+
+    Date format: YYYYMMDD for `start_period`/`end_period` (report period end_date).
+    """
     store = _get_store(store_dir)
     df = store.fina_indicator(ts_code, start_period=start_period, end_period=end_period, columns=None)
     df = _sort_desc(df, "end_date")
@@ -900,7 +999,10 @@ def get_fina_audit(
     limit: int = 50,
     store_dir: str = "store",
 ) -> dict[str, Any]:
-    """Get audit opinions (财务审计意见) history."""
+    """Get audit opinions (财务审计意见) history.
+
+    Date format: YYYYMMDD for `start_date`/`end_date` (end_date column).
+    """
     store = _get_store(store_dir)
     df = store.fina_audit(ts_code, start_date=start_date, end_date=end_date, columns=None)
     df = _sort_desc(df, "end_date")
@@ -922,7 +1024,10 @@ def get_fina_mainbz(
     limit: int = 50,
     store_dir: str = "store",
 ) -> dict[str, Any]:
-    """Get main business composition (主营业务构成) by report period (most recent first)."""
+    """Get main business composition (主营业务构成) by report period (most recent first).
+
+    Date format: YYYYMMDD for `start_period`/`end_period` (report period end_date).
+    """
     store = _get_store(store_dir)
     df = store.fina_mainbz(ts_code, start_period=start_period, end_period=end_period, columns=None)
     df = _sort_desc(df, "end_date")
@@ -942,7 +1047,10 @@ def get_disclosure_date(
     limit: int = 50,
     store_dir: str = "store",
 ) -> dict[str, Any]:
-    """Get financial report disclosure schedule (财报披露日期表) with pagination."""
+    """Get financial report disclosure schedule (财报披露日期表) with pagination.
+
+    Date format: YYYYMMDD for `end_date`.
+    """
     store = _get_store(store_dir)
     df = store.read("disclosure_date", columns=None)
     if ts_code is not None and "ts_code" in df.columns:
@@ -950,6 +1058,142 @@ def get_disclosure_date(
     if end_date is not None and "end_date" in df.columns:
         df = df.loc[df["end_date"].astype(str) == str(end_date)]
     df = _sort_desc(df, "end_date")
+    limit = min(limit or 50, 200)
+    return _df_to_payload(df, offset=offset, limit=limit)
+
+
+# -----------------------------------------------------------------------------
+# Macro (宏观)
+# -----------------------------------------------------------------------------
+
+def get_lpr(
+    *,
+    date: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    columns: list[str] | None = None,
+    offset: int = 0,
+    limit: int = 50,
+    store_dir: str = "store",
+) -> dict[str, Any]:
+    """Get LPR (贷款市场报价利率) history.
+
+    Data source: tushare `shibor_lpr`.
+    Local dataset: `lpr` (snapshot parquet).
+
+    Notes:
+    - This dataset is stored as a snapshot (single parquet file) and is typically small.
+    - `start_date`/`end_date` do in-memory filtering on the `date` column (YYYYMMDD).
+    """
+    store = _get_store(store_dir)
+    df = store.read("lpr", columns=None)
+    if date is not None and "date" in df.columns:
+        df = df.loc[df["date"].astype(str) == str(date)]
+    df = _filter_range_str(df, col="date", start=start_date, end=end_date)
+    df = _sort_desc(df, "date")
+    if columns:
+        cols = [c for c in columns if c in df.columns]
+        if cols:
+            df = df[cols]
+    limit = min(limit or 50, 200)
+    return _df_to_payload(df, offset=offset, limit=limit)
+
+
+def get_cpi(
+    *,
+    month: str | None = None,
+    start_month: str | None = None,
+    end_month: str | None = None,
+    columns: list[str] | None = None,
+    offset: int = 0,
+    limit: int = 50,
+    store_dir: str = "store",
+) -> dict[str, Any]:
+    """Get CPI (居民消费价格指数) history.
+
+    Data source: tushare `cn_cpi`.
+    Local dataset: `cpi` (snapshot parquet).
+
+    Notes:
+    - Stored as a snapshot (single parquet file).
+    - `start_month`/`end_month` filter the `month` column (YYYYMM).
+    """
+    store = _get_store(store_dir)
+    df = store.read("cpi", columns=None)
+    if month is not None and "month" in df.columns:
+        df = df.loc[df["month"].astype(str) == str(month)]
+    df = _filter_range_str(df, col="month", start=start_month, end=end_month)
+    df = _sort_desc(df, "month")
+    if columns:
+        cols = [c for c in columns if c in df.columns]
+        if cols:
+            df = df[cols]
+    limit = min(limit or 50, 200)
+    return _df_to_payload(df, offset=offset, limit=limit)
+
+
+def get_cn_sf(
+    *,
+    month: str | None = None,
+    start_month: str | None = None,
+    end_month: str | None = None,
+    columns: list[str] | None = None,
+    offset: int = 0,
+    limit: int = 50,
+    store_dir: str = "store",
+) -> dict[str, Any]:
+    """Get CN social financing (社融) monthly series.
+
+    Data source: tushare `sf_month`.
+    Local dataset: `cn_sf` (snapshot parquet).
+
+    Notes:
+    - Stored as a snapshot (single parquet file).
+    - `start_month`/`end_month` filter the `month` column (YYYYMM).
+    """
+    store = _get_store(store_dir)
+    df = store.read("cn_sf", columns=None)
+    if month is not None and "month" in df.columns:
+        df = df.loc[df["month"].astype(str) == str(month)]
+    df = _filter_range_str(df, col="month", start=start_month, end=end_month)
+    df = _sort_desc(df, "month")
+    if columns:
+        cols = [c for c in columns if c in df.columns]
+        if cols:
+            df = df[cols]
+    limit = min(limit or 50, 200)
+    return _df_to_payload(df, offset=offset, limit=limit)
+
+
+def get_cn_m(
+    *,
+    month: str | None = None,
+    start_month: str | None = None,
+    end_month: str | None = None,
+    columns: list[str] | None = None,
+    offset: int = 0,
+    limit: int = 50,
+    store_dir: str = "store",
+) -> dict[str, Any]:
+    """Get CN money supply (货币供应量) monthly series.
+
+    Data source: tushare `cn_m`.
+    Local dataset: `cn_m` (snapshot parquet).
+
+    Notes:
+    - Stored as a snapshot (single parquet file).
+    - `start_month`/`end_month` filter the `month` column (YYYYMM).
+    """
+    store = _get_store(store_dir)
+    df = store.read("cn_m", columns=None)
+    if month is not None and "month" in df.columns:
+        df = df.loc[df["month"].astype(str) == str(month)]
+    df = _filter_range_str(df, col="month", start=start_month, end=end_month)
+    df = _sort_desc(df, "month")
+    if columns:
+        cols = [c for c in columns if c in df.columns]
+        if cols:
+            df = df[cols]
     limit = min(limit or 50, 200)
     return _df_to_payload(df, offset=offset, limit=limit)
 
@@ -1023,6 +1267,11 @@ def query_dataset(
     store_dir: str = "store",
 ) -> dict[str, Any]:
     """Generic dataset query with pagination (escape hatch for advanced queries).
+
+    Date/month formats:
+    - `start_date`/`end_date`: YYYYMMDD (trade_date/end_date/nav_date depending on dataset)
+    - Finance datasets use `start_period`/`end_period` (YYYYMMDD, report period end_date) via dedicated helpers.
+    - Monthly macro snapshots typically use `where={"month":"YYYYMM"}` or the macro helpers.
     
     Available datasets: daily, weekly, monthly, daily_basic, adj_factor, 
     stk_limit, suspend_d, stock_basic, stock_company, trade_cal, new_share, namechange,

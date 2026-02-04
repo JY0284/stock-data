@@ -70,6 +70,11 @@ def register_parquet_views(
         "disclosure_date",
         # Writer metadata exported as parquet snapshot.
         "ingestion_state",
+        # Macro snapshots.
+        "lpr",
+        "cpi",
+        "cn_sf",
+        "cn_m",
     ]
 
     # Windowed snapshot datasets (one file per year).
