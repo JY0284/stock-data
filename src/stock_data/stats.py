@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+import time
 from dataclasses import dataclass
 import re
 from typing import Any
@@ -236,6 +238,26 @@ def fetch_stats_json(cfg: RunConfig, *, datasets: str = "all") -> list[dict[str,
             "parquet_bytes": s.parquet_bytes,
         })
     return out
+
+
+def write_stat_json_file(
+    cfg: RunConfig,
+    path: str,
+    *,
+    datasets: str = "all",
+) -> None:
+    """Write stat JSON to a file (same shape as /stat API) for UI fallback."""
+    datasets_list = fetch_stats_json(cfg, datasets=datasets)
+    payload: dict[str, Any] = {
+        "datasets": datasets_list,
+        "count": len(datasets_list),
+        "generated_at": int(time.time()),
+    }
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
 
 
 def print_stats(cfg: RunConfig, *, datasets: str = "all") -> None:

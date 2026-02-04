@@ -42,6 +42,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
     stat = sub.add_parser("stat", parents=[common], help="Show local data coverage and size statistics")
     stat.add_argument("--datasets", default="all", help="Comma-separated dataset names or 'all'")
+    stat.add_argument(
+        "--output",
+        "-o",
+        default=None,
+        metavar="PATH",
+        help="Write stat JSON to file (same shape as /stat API, for UI fallback)",
+    )
 
     datasets = sub.add_parser("datasets", parents=[common], help="List supported datasets and descriptions")
     datasets.add_argument("--lang", default="both", choices=["both", "en", "zh"], help="Output language (default: both)")

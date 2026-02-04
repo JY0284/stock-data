@@ -71,9 +71,14 @@ def run_command(args, *, token: str) -> int:
         return 0
 
     if args.cmd == "stat":
-        from stock_data.stats import print_stats
+        from stock_data.stats import print_stats, write_stat_json_file
 
-        print_stats(cfg, datasets=args.datasets)
+        output_path = getattr(args, "output", None)
+        if output_path:
+            write_stat_json_file(cfg, output_path, datasets=args.datasets)
+            print(f"Wrote stat JSON to {output_path}")
+        else:
+            print_stats(cfg, datasets=args.datasets)
         return 0
 
     if args.cmd == "datasets":

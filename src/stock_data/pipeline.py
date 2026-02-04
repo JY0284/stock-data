@@ -5,6 +5,7 @@ import os
 
 from stock_data.runner import RunConfig
 from stock_data.datasets import ALL_DATASET_NAMES, parse_datasets
+from stock_data.stats import write_stat_json_file
 
 
 logger = logging.getLogger(__name__)
@@ -68,6 +69,7 @@ def backfill(cfg: RunConfig, *, token: str, start_date: str, end_date: str, data
 
     ensure_derived_views(cat)
     cat.export_ingestion_state_snapshot()
+    write_stat_json_file(cfg, os.path.join(cfg.store_dir, "data-status.json"), datasets="all")
 
 
 def update(cfg: RunConfig, *, token: str, end_date: str, datasets: str) -> None:
@@ -152,4 +154,5 @@ def update(cfg: RunConfig, *, token: str, end_date: str, datasets: str) -> None:
 
     ensure_derived_views(cat)
     cat.export_ingestion_state_snapshot()
+    write_stat_json_file(cfg, os.path.join(cfg.store_dir, "data-status.json"), datasets="all")
 
