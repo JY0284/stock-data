@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import datetime as _dt
+import logging
+import os
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -9,6 +11,9 @@ import pandas as pd
 
 from stock_data.rate_limit import RateLimiter
 from stock_data.retry import RateLimitError, TransientError, retry_policy
+
+
+logger = logging.getLogger(__name__)
 
 
 _TRANSIENT_PATTERNS = [
@@ -57,6 +62,30 @@ class TushareClient:
         Retries transient failures and respects the shared global rate limiter.
         """
         self.limiter.acquire()
+
+        if os.environ.get("STOCK_DATA_LOG_TUSHARE_QUERY", "").strip() in {"1", "true", "True", "yes", "YES"}:
+            # Keep this log line short (RichHandler wraps long dicts).
+            keys = (
+                "ts_code",
+                "trade_date",
+                "start_date",
+                "end_date",
+                "start_m",
+                "end_m",
+                "period",
+                "exchange",
+                "market",
+                "is_open",
+                "list_status",
+            )
+            slim = {k: params.get(k) for k in keys if k in params}
+
+            # Avoid dumping huge strings (e.g. `fields=...`) while still indicating presence.
+            if "fields" in params and isinstance(params.get("fields"), str):
+                slim["fields_len"] = len(params["fields"])
+
+            msg = " ".join([f"{k}={slim[k]}" for k in sorted(slim.keys())])
+            logger.info("tushare: query api=%s %s", api_name, msg)
 
         import tushare as ts
 

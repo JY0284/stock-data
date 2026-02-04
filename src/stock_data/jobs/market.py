@@ -163,63 +163,64 @@ def _run_index_daily(
     index_codes = _get_index_codes(catalog)
     logger.info("market: found %d index codes for index_daily", len(index_codes))
     
-    # Build tasks: ts_code
+    # Build tasks: correctness-first.
+    # 1) Always include codes that are missing locally or whose max(trade_date) < effective_end.
+    # 2) Optionally include already-caught-up codes for periodic force-refresh based on recency.
     tasks: list[str] = []
+
     refresh_seconds: int | None = None
     if refresh_days is not None:
         days = int(refresh_days)
         refresh_seconds = (days * 24 * 60 * 60) if days > 0 else None
 
-    max_td = _index_daily_max_trade_date()
-    is_stalled = (max_td is None) or (max_td < effective_end)
-    if is_stalled:
-        logger.warning(
-            "market: index_daily appears behind latest open date (max_trade_date=%s effective_end=%s); forcing refresh",
-            max_td or "-",
-            effective_end,
-        )
-
-        # When stalled, DO NOT rely on ingestion_state recency or completion flags.
-        # Those can indicate "completed" while the parquet content is still behind.
-        # Prefer refreshing only codes that are missing/behind; fall back to refresh-all.
-        behind: set[str] | None = None
-        g = catalog.parquet_glob("index_daily")
-        if glob.glob(g, recursive=True):
-            try:
-                with catalog.connect() as con:
-                    rows = con.execute(
-                        f"SELECT ts_code, MAX(trade_date) AS max_td FROM read_parquet('{g}', union_by_name=true) GROUP BY ts_code;"
-                    ).fetchall()
-                max_by_code = {str(ts): (str(td) if td is not None else None) for (ts, td) in rows}
-                behind = {c for c in index_codes if (max_by_code.get(c) is None) or (max_by_code.get(c) < effective_end)}
-            except Exception:
-                logger.exception("market: failed to compute per-code max(trade_date) for index_daily; refreshing all")
-                behind = None
-
-        # When stalled because upstream hasn't published the latest day yet, repeated
-        # `update` runs can thrash the same codes. Back off per-code for a while.
-        stall_retry_seconds = 2 * 60 * 60
+    max_by_code: dict[str, str] = {}
+    g = catalog.parquet_glob("index_daily")
+    if glob.glob(g, recursive=True):
         try:
-            v = os.environ.get("STOCK_DATA_INDEX_DAILY_STALL_RETRY_SECONDS")
-            if v is not None and str(v).strip() != "":
-                stall_retry_seconds = max(0, int(v))
+            with catalog.connect() as con:
+                rows = con.execute(
+                    f"SELECT ts_code, MAX(trade_date) AS max_td FROM read_parquet('{g}', union_by_name=true) GROUP BY ts_code;"
+                ).fetchall()
+            for ts, td in rows:
+                if ts is None or td is None:
+                    continue
+                s = str(td)
+                if s.strip():
+                    max_by_code[str(ts)] = s
         except Exception:
-            stall_retry_seconds = 2 * 60 * 60
+            logger.exception("market: failed to compute per-code max(trade_date) for index_daily")
+            max_by_code = {}
 
-        attempted_recent = _recently_attempted_keys(stall_retry_seconds if stall_retry_seconds > 0 else None)
-        raw_tasks = sorted(behind) if behind is not None else list(index_codes)
-        tasks = [c for c in raw_tasks if _key(c) not in attempted_recent]
-    else:
-        # Treat both completed and skipped as "recently attempted" so a second
-        # update shortly after doesn't immediately retry empty/stale upstream.
-        attempted_recent = _recently_attempted_keys(refresh_seconds)
-        for code in index_codes:
-            key = _key(code)
+    # Avoid thrash when upstream hasn't published the latest day yet.
+    stall_retry_seconds = 2 * 60 * 60
+    try:
+        v = os.environ.get("STOCK_DATA_INDEX_DAILY_STALL_RETRY_SECONDS")
+        if v is not None and str(v).strip() != "":
+            stall_retry_seconds = max(0, int(v))
+    except Exception:
+        stall_retry_seconds = 2 * 60 * 60
+
+    attempted_recent = _recently_attempted_keys(stall_retry_seconds if stall_retry_seconds > 0 else None)
+    completed_recent = _recently_attempted_keys(refresh_seconds)
+
+    for code in index_codes:
+        key = _key(code)
+        local_max = max_by_code.get(code)
+
+        behind = (local_max is None) or (local_max < effective_end)
+        force_refresh = (refresh_seconds is not None) and (key not in completed_recent)
+
+        if behind:
+            # Ensure we catch up to the latest open day.
+            if key not in attempted_recent:
+                tasks.append(code)
+        elif force_refresh:
+            # Optional periodic refresh even when already caught up.
             if key not in attempted_recent:
                 tasks.append(code)
     
     if not tasks:
-        logger.info("market: nothing to do for index_daily")
+        logger.info("market: nothing to do for index_daily (effective_end=%s)", effective_end)
         return
     
     logger.info(
@@ -239,9 +240,26 @@ def _run_index_daily(
             running.add(ts_code)
         try:
             logger.debug("market: fetch start index_daily ts_code=%s", ts_code)
-            
-            # Query all history for this index
-            df = client.query("index_daily", ts_code=ts_code)
+
+            # Prefer incremental query when local parquet already has history.
+            existing = None
+            existing_max: str | None = None
+            try:
+                safe = ts_code.replace(".", "_")
+                path = os.path.join(catalog.parquet_root, "index_daily", f"ts_code={safe}.parquet")
+                if os.path.exists(path):
+                    existing = pd.read_parquet(path)
+                    if existing is not None and not existing.empty and "trade_date" in existing.columns:
+                        existing_max = str(existing["trade_date"].astype(str).max())
+            except Exception:
+                existing = None
+                existing_max = None
+
+            if existing_max:
+                df = client.query("index_daily", ts_code=ts_code, start_date=str(existing_max), end_date=str(effective_end))
+            else:
+                # Query all history for this index (first-time ingestion)
+                df = client.query("index_daily", ts_code=ts_code)
             
             if df is None:
                 df = pd.DataFrame()
@@ -285,10 +303,25 @@ def _run_index_daily(
                 # If schema is unexpected, proceed to write anyway.
                 pass
 
-            w.write_ts_code_partition("index_daily", ts_code, df)
-            catalog.set_state(dataset="index_daily", partition_key=key, status="completed", row_count=int(len(df)))
-            logger.debug("market: fetch done index_daily ts_code=%s rows=%d", ts_code, int(len(df)))
-            return int(len(df))
+            # Merge incremental tail into existing history.
+            df_out = df
+            if existing is not None and existing_max and not getattr(df, "empty", False) and "trade_date" in df.columns:
+                try:
+                    merged = pd.concat([existing, df], ignore_index=True)
+                    merged["trade_date"] = merged["trade_date"].astype(str)
+                    subset = ["trade_date"]
+                    if "ts_code" in merged.columns:
+                        subset = ["ts_code", "trade_date"]
+                    merged = merged.sort_values("trade_date", kind="stable")
+                    merged = merged.drop_duplicates(subset=subset, keep="last")
+                    df_out = merged.reset_index(drop=True)
+                except Exception:
+                    df_out = df
+
+            w.write_ts_code_partition("index_daily", ts_code, df_out)
+            catalog.set_state(dataset="index_daily", partition_key=key, status="completed", row_count=int(len(df_out)))
+            logger.debug("market: fetch done index_daily ts_code=%s rows=%d", ts_code, int(len(df_out)))
+            return int(len(df_out))
         except Exception as e:  # noqa: BLE001
             catalog.set_state(dataset="index_daily", partition_key=key, status="failed", error=str(e))
             from stock_data.retry import RateLimitError, TransientError

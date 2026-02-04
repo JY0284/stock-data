@@ -41,6 +41,11 @@ Run this daily (e.g., via cron) to fetch new data since the last successful run.
 stock-data update
 ```
 
+Notes:
+- Some datasets are **ts_code-partitioned** and grow over time (e.g. `index_daily`, `fund_nav`, `fund_share`). In `update` mode, when a local `ts_code=...parquet` already exists, the job will request only the missing tail using Tushare's `start_date`/`end_date` parameters, then merge+dedupe into the existing file.
+- By default, `update` tries to make local data **caught up to `--end-date`** for these datasets by checking each code’s local max date and fetching only what’s missing.
+- `STOCK_DATA_TS_CODE_REFRESH_DAYS` is an **optional force-refresh** knob: if set (e.g. `7`), it will periodically re-fetch codes even when already caught up (useful for upstream revisions). Set it to `0` to disable force-refresh.
+
 By default, `update` downloads up to **today** (based on local date). You can pin the end date:
 
 ```bash
@@ -329,6 +334,20 @@ Yes, with a few notes:
 - Running **`backfill A→B` again** will re-download and overwrite *all* partitions in that range (expensive but “force refresh”).
 - Running **`update --end-date B`** will do almost nothing if everything is already completed; otherwise it only fills the missing/incomplete partitions (cheap and incremental).
 
+### 5) How can I see what ranges are requested from Tushare?
+
+Set `STOCK_DATA_LOG_TUSHARE_QUERY=1` to log a slim set of query parameters (useful for verifying incremental `start_date/end_date` and `start_m/end_m` behavior):
+
+```bash
+STOCK_DATA_LOG_TUSHARE_QUERY=1 stock-data update --datasets index_daily --end-date 20260204
+```
+
+Example log line:
+
+```text
+tushare: query api=index_daily end_date=20260203 start_date=20260120 ts_code=000001.SH
+```
+
 ## Datasets & Schemas
 
 This project stores datasets under `store/parquet/<dataset>/` and uses DuckDB views (e.g. `v_daily`, `v_daily_adj`) for convenient querying.
@@ -416,6 +435,33 @@ Columns:
 - `trade_date`
 - `suspend_timing`: Suspension timing
 - `suspend_type`: Suspension type
+
+### TS-code partitioned (growing history per code)
+
+Files live at `store/parquet/<dataset>/ts_code=<TS_CODE_WITH_UNDERSCORE>.parquet`.
+
+These are typically updated incrementally by requesting only the missing tail (`start_date/end_date`) and merging into the existing file.
+
+#### `index_daily` (tushare: `index_daily`)
+
+Columns (common):
+- `ts_code`
+- `trade_date`
+- `close` (and other OHLCV fields depending on upstream)
+
+#### `fund_nav` (tushare: `fund_nav`)
+
+Columns (common):
+- `ts_code`
+- `nav_date`
+- `adj_nav` (and other NAV fields depending on upstream)
+
+#### `fund_share` (tushare: `fund_share`)
+
+Columns (common):
+- `ts_code`
+- `trade_date`
+- `fd_share` (and other share fields depending on upstream)
 
 ### Basic (snapshots / windows)
 

@@ -47,6 +47,11 @@ stock-data backfill --start-date 20100101 --end-date 20231231
 stock-data update
 ```
 
+说明：
+- 有些数据集是 **按 `ts_code` 分区**且会持续增长的（例如 `index_daily`、`fund_nav`、`fund_share`）。在 `update` 模式下，如果本地已经存在对应的 `ts_code=...parquet`，会优先用 Tushare 的 `start_date/end_date` 只拉“缺失的尾部区间”，再与本地历史 merge+去重写回。
+- 默认情况下，`update` 会以 `--end-date` 为目标，通过比较每个 `ts_code` 的本地最大日期来判断是否“落后”，并只拉取缺失的尾部数据，从而保证本地尽量追平上游。
+- `STOCK_DATA_TS_CODE_REFRESH_DAYS` 是一个**可选的强制重刷**开关：如果设置（例如 `7`），即使已经追平也会周期性重新拉取（用于应对上游修订等情况）；设置为 `0` 表示关闭强制重刷。
+
 默认 `update` 的 `end_date` 为 **今天**（本机日期）。也可以指定截止日期：
 
 ```bash
@@ -307,6 +312,20 @@ python demos/print_stock_300888.py 300888 store
 - 再跑一次 **`backfill A→B`**：会重新下载并覆盖该区间内的分区（更贵，但等价于强制刷新）。
 - 跑 **`update --end-date B`**：若都已完成，基本无事可做；否则只补缺失/失败分区（便宜且适合日常）。
 
+### 5）如何确认 Tushare 实际请求了哪些区间？
+
+设置 `STOCK_DATA_LOG_TUSHARE_QUERY=1` 可以打印精简后的请求参数（用于验证增量拉取是否带了 `start_date/end_date` 或 `start_m/end_m`）：
+
+```bash
+STOCK_DATA_LOG_TUSHARE_QUERY=1 stock-data update --datasets index_daily --end-date 20260204
+```
+
+日志示例：
+
+```text
+tushare: query api=index_daily end_date=20260203 start_date=20260120 ts_code=000001.SH
+```
+
 ## 数据集与字段（Schemas）
 
 本节列的是“本仓库实际写入 Parquet 的字段”（不是把上游文档整段复制）。如果你本地 store 与示例不同，以你本地 Parquet schema 为准。
@@ -363,6 +382,30 @@ python demos/print_stock_300888.py 300888 store
 
 字段：
 - `ts_code`, `trade_date`, `suspend_timing`, `suspend_type`
+
+### 按 ts_code 分区（单代码全量历史文件）
+
+文件路径：`store/parquet/<dataset>/ts_code=<TS_CODE_下划线替换点号>.parquet`
+
+这类数据集通常会通过 `start_date/end_date` 做“尾部增量拉取”，并与本地历史 merge+去重。
+
+#### `index_daily`（tushare: `index_daily`）
+
+常见字段：
+- `ts_code`, `trade_date`
+- `close`（以及上游可能返回的其他 OHLCV 字段）
+
+#### `fund_nav`（tushare: `fund_nav`）
+
+常见字段：
+- `ts_code`, `nav_date`
+- `adj_nav`（以及上游可能返回的其他净值字段）
+
+#### `fund_share`（tushare: `fund_share`）
+
+常见字段：
+- `ts_code`, `trade_date`
+- `fd_share`（以及上游可能返回的其他份额字段）
 
 ### 基础类（快照/按年窗口）
 

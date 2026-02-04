@@ -57,7 +57,14 @@ def backfill(cfg: RunConfig, *, token: str, start_date: str, end_date: str, data
     run_finance(cfg, token=token, catalog=cat, datasets=[d for d in selected if d in finance_datasets], start_date=start_date, end_date=end_date)
 
     # ETF (ts_code partitioned).
-    run_etf(cfg, token=token, catalog=cat, datasets=[d for d in selected if d in etf_datasets])
+    run_etf(
+        cfg,
+        token=token,
+        catalog=cat,
+        datasets=[d for d in selected if d in etf_datasets],
+        start_date=start_date,
+        end_date=end_date,
+    )
 
     ensure_derived_views(cat)
     cat.export_ingestion_state_snapshot()
@@ -95,16 +102,17 @@ def update(cfg: RunConfig, *, token: str, end_date: str, datasets: str) -> None:
     # Macro snapshots.
     run_macro(cfg, token=token, catalog=cat, datasets=[d for d in selected if d in macro_datasets], start_date=None, end_date=end_date)
 
-    # Refresh policy for ts_code-partitioned datasets (ETF, dividend, fina_audit, index_daily).
-    # These endpoints return full history for a code, but data keeps growing; without periodic
-    # refresh, they become "complete once and never update".
-    refresh_days: int | None = 7
+    # Optional force-refresh policy for ts_code-partitioned datasets (ETF, dividend, fina_audit, index_daily).
+    # Update mode already checks whether each code is behind `end_date` and fetches the missing tail.
+    # Force-refresh is only needed if you want to periodically re-pull even when already caught up
+    # (e.g. to handle upstream revisions).
+    refresh_days: int | None = None
     try:
         v = os.environ.get("STOCK_DATA_TS_CODE_REFRESH_DAYS")
         if v is not None and str(v).strip() != "":
             refresh_days = int(v)
     except Exception:
-        refresh_days = 7
+        refresh_days = None
 
     if refresh_days is not None and int(refresh_days) <= 0:
         refresh_days = None
@@ -138,6 +146,8 @@ def update(cfg: RunConfig, *, token: str, end_date: str, datasets: str) -> None:
         catalog=cat,
         datasets=[d for d in selected if d in etf_datasets],
         refresh_days=refresh_days,
+        start_date=None,
+        end_date=end_date,
     )
 
     ensure_derived_views(cat)
