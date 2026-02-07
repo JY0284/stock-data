@@ -113,6 +113,8 @@ class StockStore:
         "monthly",
         # ETF daily bars are trade_date-partitioned.
         "etf_daily",
+        # US daily bars are trade_date-partitioned.
+        "us_daily",
     }
 
     # Snapshot datasets in this repo.
@@ -128,6 +130,9 @@ class StockStore:
         "cpi",
         "cn_sf",
         "cn_m",
+        # US stock snapshots.
+        "us_basic",
+        "us_tradecal",
     }
 
     # Windowed-by-year datasets in this repo.
@@ -959,6 +964,87 @@ class StockStore:
         return df
 
     # -----------------------------
+    # Public API: US stock datasets
+    # -----------------------------
+    def us_basic(
+        self,
+        *,
+        ts_code: str | None = None,
+        classify: str | None = None,
+        columns: list[str] | None = None,
+        limit: int | None = None,
+        cache: bool = True,
+    ) -> pd.DataFrame:
+        """Get US stock basic info (美股列表).
+        
+        Optionally filter by ts_code or classify (ADR/GDR/EQ).
+        """
+        df = self.read("us_basic", columns=columns, limit=limit, cache=cache)
+        if ts_code:
+            df = df.loc[df["ts_code"] == ts_code]
+        if classify:
+            df = df.loc[df["classify"] == classify]
+        return df.reset_index(drop=True)
+
+    def us_tradecal(
+        self,
+        *,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        is_open: int | None = None,
+        cache: bool = True,
+    ) -> pd.DataFrame:
+        """Get US trading calendar (美股交易日历).
+        
+        Args:
+            start_date: Filter calendar from this date (YYYYMMDD).
+            end_date: Filter calendar up to this date (YYYYMMDD).
+            is_open: Filter by open status (1=open, 0=closed).
+        """
+        df = self.read("us_tradecal", cache=cache)
+        if start_date is not None:
+            df = df.loc[df["cal_date"].astype(str) >= str(start_date)]
+        if end_date is not None:
+            df = df.loc[df["cal_date"].astype(str) <= str(end_date)]
+        if is_open is not None:
+            df = df.loc[df["is_open"] == int(is_open)]
+        return df.reset_index(drop=True)
+
+    def us_trading_days(
+        self,
+        start_date: str,
+        end_date: str,
+    ) -> list[str]:
+        """Get list of US trading days in the given date range."""
+        cal = self.us_tradecal(start_date=start_date, end_date=end_date, is_open=1)
+        dates = cal["cal_date"].astype(str).tolist()
+        return sorted(dates)
+
+    def us_daily(
+        self,
+        ts_code: str,
+        *,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        columns: list[str] | None = None,
+        cache: bool = True,
+    ) -> pd.DataFrame:
+        """Get US stock daily bars (美股日线行情) for a given stock code.
+        
+        Data is partitioned by trade_date, similar to daily() for A-shares.
+        """
+        return self._read_trade_date_dataset(
+            "us_daily",
+            ts_code=ts_code,
+            start_date=start_date,
+            end_date=end_date,
+            columns=columns,
+            order_by="trade_date",
+            exchange=None,  # Not applicable for US stocks
+            cache=cache,
+        )
+
+    # -----------------------------
     # Escape hatches
     # -----------------------------
     def sql(self, query: str, params: list[Any] | None = None) -> pd.DataFrame:
@@ -1177,6 +1263,8 @@ class StockStore:
             "cpi",
             "cn_sf",
             "cn_m",
+            "us_basic",
+            "us_tradecal",
         }:
             return os.path.join(self.parquet_dir, dataset, "latest.parquet")
         if dataset == "trade_cal":

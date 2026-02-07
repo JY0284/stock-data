@@ -19,6 +19,7 @@ from stock_data.store import StockStore, open_store
 
 
 MacroDataset = Literal["lpr", "cpi", "cn_sf", "cn_m"]
+UsDataset = Literal["us_basic", "us_tradecal", "us_daily"]
 
 
 @dataclass(frozen=True)
@@ -149,6 +150,43 @@ def _html_index(settings: WebSettings, *, base_url: str) -> str:
 
         <h2>接口一览（含“全部参数”示例）</h2>
         <div class=\"grid\">
+
+            <div class="card">
+                <h3><code>GET /us/*</code> 美股数据</h3>
+                <div class="muted">支持：<code>/us</code>, <code>/us/basic</code>, <code>/us/tradecal</code>, <code>/us/daily</code>。其中 <code>/us/daily</code> 必填 <code>ts_code</code>（如 AAPL）。</div>
+
+                <details open>
+                    <summary>1) 数据集列表</summary>
+                    <pre>curl -s '{base_url}us'</pre>
+                </details>
+
+                <details>
+                    <summary>2) 美股列表（us_basic）</summary>
+                    <pre>curl -G '{base_url}us/basic' \
+    --data-urlencode 'classify=EQ' \
+    --data-urlencode 'limit=50' \
+    --data-urlencode 'columns=ts_code,name,enname,classify,list_date'</pre>
+                </details>
+
+                <details>
+                    <summary>3) 交易日历（us_tradecal）</summary>
+                    <pre>curl -G '{base_url}us/tradecal' \
+    --data-urlencode 'start_date=20260101' \
+    --data-urlencode 'end_date=20260207' \
+    --data-urlencode 'is_open=1' \
+    --data-urlencode 'limit=20'</pre>
+                </details>
+
+                <details>
+                    <summary>4) 日线行情（us_daily）</summary>
+                    <pre>curl -G '{base_url}us/daily' \
+    --data-urlencode 'ts_code=AAPL' \
+    --data-urlencode 'start_date=20260101' \
+    --data-urlencode 'end_date=20260207' \
+    --data-urlencode 'order_by=trade_date desc' \
+    --data-urlencode 'limit=200'</pre>
+                </details>
+            </div>
             <div class=\"card\">
                 <h3><code>GET /health</code> 健康检查</h3>
                 <div class=\"muted\">无参数；返回服务状态与本地 store 路径信息。</div>
@@ -707,6 +745,84 @@ def create_app(*, settings: WebSettings | None = None) -> FastAPI:
         if format == "csv":
             return Response(content=df.to_csv(index=False), media_type="text/csv; charset=utf-8")
         return {"dataset": dataset, "rows": int(len(df)), "data": _df_to_json_records(df)}
+
+    # -----------------------------
+    # Convenience APIs: US stocks
+    # -----------------------------
+    @app.get("/us")
+    async def us_list():
+        return {
+            "datasets": ["us_basic", "us_tradecal", "us_daily"],
+            "count": 3,
+        }
+
+    @app.get("/us/basic")
+    async def us_basic(
+        ts_code: str | None = Query(None, description="e.g. AAPL"),
+        classify: str | None = Query(None, description="ADR/GDR/EQ"),
+        columns: str | None = Query(None, description="Comma-separated column list"),
+        limit: int | None = Query(None, description="Row limit"),
+        format: Literal["json", "csv"] = Query("json"),
+        cache: bool = Query(True),
+    ):
+        store: StockStore = app.state.store
+        lim = _clamp_limit(limit, default_limit=settings.default_limit, max_limit=settings.max_limit)
+        cols = _parse_columns(columns)
+        df = store.us_basic(ts_code=ts_code, classify=classify, columns=cols, limit=lim, cache=cache)
+        if format == "csv":
+            return Response(content=df.to_csv(index=False), media_type="text/csv; charset=utf-8")
+        return {"dataset": "us_basic", "rows": int(len(df)), "data": _df_to_json_records(df)}
+
+    @app.get("/us/tradecal")
+    async def us_tradecal(
+        start_date: str | None = Query(None, description="YYYYMMDD"),
+        end_date: str | None = Query(None, description="YYYYMMDD"),
+        is_open: int | None = Query(None, description="1=open,0=closed"),
+        columns: str | None = Query(None, description="Comma-separated column list"),
+        limit: int | None = Query(None, description="Row limit"),
+        format: Literal["json", "csv"] = Query("json"),
+        cache: bool = Query(True),
+    ):
+        store: StockStore = app.state.store
+        df = store.us_tradecal(start_date=start_date, end_date=end_date, is_open=is_open, cache=cache)
+        cols = _parse_columns(columns)
+        if cols:
+            keep = [c for c in cols if c in df.columns]
+            if keep:
+                df = df[keep]
+        lim = _clamp_limit(limit, default_limit=settings.default_limit, max_limit=settings.max_limit)
+        df = df.head(int(lim))
+        if format == "csv":
+            return Response(content=df.to_csv(index=False), media_type="text/csv; charset=utf-8")
+        return {"dataset": "us_tradecal", "rows": int(len(df)), "data": _df_to_json_records(df)}
+
+    @app.get("/us/daily")
+    async def us_daily(
+        ts_code: str = Query(..., description="e.g. AAPL"),
+        start_date: str | None = Query(None, description="YYYYMMDD"),
+        end_date: str | None = Query(None, description="YYYYMMDD"),
+        columns: str | None = Query(None, description="Comma-separated column list"),
+        order_by: str | None = Query(None, description="e.g. trade_date desc"),
+        limit: int | None = Query(None, description="Row limit"),
+        format: Literal["json", "csv"] = Query("json"),
+        cache: bool = Query(True),
+    ):
+        store: StockStore = app.state.store
+        lim = _clamp_limit(limit, default_limit=settings.default_limit, max_limit=settings.max_limit)
+        cols = _parse_columns(columns)
+        df = store.read(
+            "us_daily",
+            where={"ts_code": ts_code},
+            start_date=start_date,
+            end_date=end_date,
+            columns=cols,
+            limit=lim,
+            order_by=order_by,
+            cache=cache,
+        )
+        if format == "csv":
+            return Response(content=df.to_csv(index=False), media_type="text/csv; charset=utf-8")
+        return {"dataset": "us_daily", "ts_code": ts_code, "rows": int(len(df)), "data": _df_to_json_records(df)}
 
     def _store_root() -> Path:
         # Resolve to avoid traversal tricks.

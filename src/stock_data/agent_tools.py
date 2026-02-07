@@ -1063,6 +1063,122 @@ def get_disclosure_date(
 
 
 # -----------------------------------------------------------------------------
+# US Stocks (美股)
+# -----------------------------------------------------------------------------
+
+def get_us_basic(
+    *,
+    ts_code: str | None = None,
+    classify: str | None = None,
+    name_contains: str | None = None,
+    columns: list[str] | None = None,
+    offset: int = 0,
+    limit: int = 20,
+    store_dir: str = "store",
+) -> dict[str, Any]:
+    """Get US stock list/basic info with pagination.
+
+    Local dataset: `us_basic` (snapshot parquet).
+
+    Args:
+        ts_code: Exact code (e.g. 'AAPL').
+        classify: ADR/GDR/EQ.
+        name_contains: Substring match on `name` or `enname` (case-insensitive).
+        columns: Columns to return (default is a compact list view).
+        offset/limit: Pagination.
+    """
+    store = _get_store(store_dir)
+
+    if columns is None:
+        columns = ["ts_code", "name", "enname", "classify", "list_date", "delist_date"]
+
+    df = store.us_basic(ts_code=ts_code, classify=classify, columns=None, cache=True)
+
+    if name_contains:
+        q = str(name_contains)
+        mask = False
+        if "name" in df.columns:
+            mask = mask | df["name"].astype(str).str.contains(q, case=False, na=False)
+        if "enname" in df.columns:
+            mask = mask | df["enname"].astype(str).str.contains(q, case=False, na=False)
+        df = df.loc[mask]
+
+    cols = [c for c in (columns or []) if c in df.columns]
+    if cols:
+        df = df[cols]
+
+    limit = min(limit or 20, 100)
+    return _df_to_payload(df, offset=offset, limit=limit)
+
+
+def get_us_basic_detail(
+    ts_code: str,
+    *,
+    store_dir: str = "store",
+) -> dict[str, Any]:
+    """Get full US stock basic info for a single code."""
+    store = _get_store(store_dir)
+    df = store.us_basic(ts_code=ts_code, columns=None, cache=True)
+    return _single_row_payload(df)
+
+
+def get_us_tradecal(
+    *,
+    date: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    is_open: int | None = None,
+    columns: list[str] | None = None,
+    offset: int = 0,
+    limit: int = 50,
+    store_dir: str = "store",
+) -> dict[str, Any]:
+    """Get US trading calendar.
+
+    Local dataset: `us_tradecal` (snapshot parquet).
+    Date format: YYYYMMDD.
+    """
+    store = _get_store(store_dir)
+    df = store.us_tradecal(start_date=start_date, end_date=end_date, is_open=is_open, cache=True)
+    if date is not None and "cal_date" in df.columns:
+        df = df.loc[df["cal_date"].astype(str) == str(date)]
+    df = _filter_range_str(df, col="cal_date", start=start_date, end=end_date)
+    df = _sort_desc(df, "cal_date")
+    if columns:
+        cols = [c for c in columns if c in df.columns]
+        if cols:
+            df = df[cols]
+    limit = min(limit or 50, 500)
+    return _df_to_payload(df, offset=offset, limit=limit)
+
+
+def get_us_daily_prices(
+    ts_code: str,
+    *,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    columns: list[str] | None = None,
+    offset: int = 0,
+    limit: int = 50,
+    store_dir: str = "store",
+) -> dict[str, Any]:
+    """Get US daily bars for a US stock code.
+
+    Local dataset: `us_daily` (trade_date-partitioned parquet).
+    Date format: YYYYMMDD.
+    """
+    store = _get_store(store_dir)
+    df = store.us_daily(ts_code, start_date=start_date, end_date=end_date, columns=None, cache=True)
+    df = _sort_desc(df, "trade_date")
+    if columns:
+        cols = [c for c in columns if c in df.columns]
+        if cols:
+            df = df[cols]
+    limit = min(limit or 50, 500)
+    return _df_to_payload(df, offset=offset, limit=limit)
+
+
+# -----------------------------------------------------------------------------
 # Macro (宏观)
 # -----------------------------------------------------------------------------
 
@@ -1273,11 +1389,12 @@ def query_dataset(
     - Finance datasets use `start_period`/`end_period` (YYYYMMDD, report period end_date) via dedicated helpers.
     - Monthly macro snapshots typically use `where={"month":"YYYYMM"}` or the macro helpers.
     
-    Available datasets: daily, weekly, monthly, daily_basic, adj_factor, 
+    Available datasets: daily, weekly, monthly, daily_basic, adj_factor,
     stk_limit, suspend_d, stock_basic, stock_company, trade_cal, new_share, namechange,
     index_basic, index_daily, etf_daily, fund_basic, fund_nav, fund_share, fund_div,
     income, balancesheet, cashflow, forecast, express, dividend, fina_indicator, fina_audit, fina_mainbz,
-    disclosure_date
+    disclosure_date,
+    us_basic, us_tradecal, us_daily
     """
     store = _get_store(store_dir)
     df = store.read(

@@ -47,6 +47,8 @@ def register_parquet_views(
         "weekly",
         "monthly",
         "etf_daily",
+        # US stock daily bars.
+        "us_daily",
     ]
 
     # Finance datasets (report-period partitioned)
@@ -75,6 +77,9 @@ def register_parquet_views(
         "cpi",
         "cn_sf",
         "cn_m",
+        # US stock snapshots.
+        "us_basic",
+        "us_tradecal",
     ]
 
     # Windowed snapshot datasets (one file per year).

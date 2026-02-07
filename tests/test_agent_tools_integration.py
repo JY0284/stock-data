@@ -222,6 +222,88 @@ def _make_tiny_store(tmp_path: Path) -> Path:
     )
     _write_parquet(store_dir / "parquet" / "fina_mainbz" / "year=2024" / "fina_mainbz.parquet", fina_mainbz)
 
+    # -----------------------------
+    # US stock datasets
+    # -----------------------------
+    us_basic = pd.DataFrame(
+        [
+            {
+                "ts_code": "AAPL",
+                "name": "苹果",
+                "enname": "Apple Inc.",
+                "classify": "EQ",
+                "list_date": "19801212",
+                "delist_date": "",
+            },
+            {
+                "ts_code": "MSFT",
+                "name": "微软",
+                "enname": "Microsoft Corporation",
+                "classify": "EQ",
+                "list_date": "19860313",
+                "delist_date": "",
+            },
+        ]
+    )
+    _write_parquet(store_dir / "parquet" / "us_basic" / "latest.parquet", us_basic)
+
+    us_tradecal = pd.DataFrame(
+        [
+            {"cal_date": "20260102", "is_open": 1, "pretrade_date": "20251231"},
+            {"cal_date": "20260103", "is_open": 0, "pretrade_date": "20260102"},
+            {"cal_date": "20260105", "is_open": 1, "pretrade_date": "20260102"},
+        ]
+    )
+    _write_parquet(store_dir / "parquet" / "us_tradecal" / "latest.parquet", us_tradecal)
+
+    us_daily_20260102 = pd.DataFrame(
+        [
+            {
+                "ts_code": "AAPL",
+                "trade_date": "20260102",
+                "open": 200.0,
+                "high": 210.0,
+                "low": 198.0,
+                "close": 208.0,
+                "vol": 100.0,
+                "amount": 20800.0,
+            },
+            {
+                "ts_code": "MSFT",
+                "trade_date": "20260102",
+                "open": 300.0,
+                "high": 305.0,
+                "low": 295.0,
+                "close": 302.0,
+                "vol": 200.0,
+                "amount": 60400.0,
+            },
+        ]
+    )
+    _write_parquet(
+        store_dir / "parquet" / "us_daily" / "year=2026" / "month=01" / "trade_date=20260102.parquet",
+        us_daily_20260102,
+    )
+
+    us_daily_20260105 = pd.DataFrame(
+        [
+            {
+                "ts_code": "AAPL",
+                "trade_date": "20260105",
+                "open": 208.0,
+                "high": 212.0,
+                "low": 207.0,
+                "close": 211.0,
+                "vol": 120.0,
+                "amount": 25320.0,
+            },
+        ]
+    )
+    _write_parquet(
+        store_dir / "parquet" / "us_daily" / "year=2026" / "month=01" / "trade_date=20260105.parquet",
+        us_daily_20260105,
+    )
+
     return store_dir
 
 
@@ -319,3 +401,25 @@ def test_finance_tools(tmp_path: Path) -> None:
     mb = agent_tools.get_fina_mainbz("000001.SZ", limit=10, store_dir=str(store_dir))
     assert mb["total_count"] == 2
     assert mb["rows"][0]["end_date"] == "20241231"
+
+
+def test_us_tools(tmp_path: Path) -> None:
+    store_dir = _make_tiny_store(tmp_path)
+    agent_tools.clear_store_cache(str(store_dir))
+
+    basics = agent_tools.get_us_basic(limit=10, store_dir=str(store_dir))
+    assert basics["total_count"] == 2
+    codes = {r["ts_code"] for r in basics["rows"]}
+    assert codes == {"AAPL", "MSFT"}
+
+    aapl = agent_tools.get_us_basic_detail("AAPL", store_dir=str(store_dir))
+    assert aapl["found"] is True
+    assert aapl["data"]["ts_code"] == "AAPL"
+
+    cal = agent_tools.get_us_tradecal(start_date="20260101", end_date="20260110", is_open=1, limit=10, store_dir=str(store_dir))
+    assert cal["total_count"] == 2
+    assert cal["rows"][0]["cal_date"] == "20260105"  # sorted desc
+
+    bars = agent_tools.get_us_daily_prices("AAPL", start_date="20260101", end_date="20260110", limit=10, store_dir=str(store_dir))
+    assert bars["total_count"] == 2
+    assert bars["rows"][0]["trade_date"] == "20260105"  # most recent first

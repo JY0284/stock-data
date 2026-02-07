@@ -281,6 +281,32 @@ DATASETS: list[DatasetInfo] = [
         desc_en="China money supply (货币供应量) time series (stored as a single snapshot parquet).",
         desc_zh="中国货币供应量时间序列（单文件快照存储）。",
     ),
+
+    # US Stock datasets (美股数据)
+    DatasetInfo(
+        name="us_basic",
+        category="us",
+        partitioning="snapshot",
+        source="tushare: us_basic",
+        desc_en="US stock list (basic info: ts_code, name, classify, list_date, delist_date).",
+        desc_zh="美股列表/基础信息（代码、名称、分类、上市退市日期）。",
+    ),
+    DatasetInfo(
+        name="us_tradecal",
+        category="us",
+        partitioning="snapshot",
+        source="tushare: us_tradecal",
+        desc_en="US trading calendar (cal_date, is_open, pretrade_date).",
+        desc_zh="美股交易日历（日期、是否交易、上一交易日）。",
+    ),
+    DatasetInfo(
+        name="us_daily",
+        category="us",
+        partitioning="trade_date",
+        source="tushare: us_daily",
+        desc_en="US stock daily bars (OHLCV, vwap, turnover, valuation) for a given trade_date.",
+        desc_zh="美股日线行情（指定交易日，OHLCV、成交量、估值指标等）。",
+    ),
 ]
 
 
