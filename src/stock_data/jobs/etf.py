@@ -164,6 +164,8 @@ def run_etf(
     # 2) Optionally include already-caught-up codes for periodic force-refresh (upstream revisions).
     # 3) Back off per-code when upstream is empty/stale to avoid thrashing.
     tasks: list[tuple[str, str]] = []
+    tasks_existing_first: list[tuple[str, str]] = []
+    tasks_missing_file_last: list[tuple[str, str]] = []
     for ds in datasets:
         if ds not in ETF_DATASETS:
             continue
@@ -172,25 +174,50 @@ def run_etf(
         max_by_code = _max_date_by_code(ds, date_col) if (date_col and effective_end) else {}
         completed_recent = catalog.completed_partitions(ds, newer_than_seconds=refresh_seconds) if refresh_seconds else set()
 
-        stall_retry_seconds = 2 * 60 * 60
+        # Empty responses are common for some ts_codes (new listings, delisted, fund types
+        # without NAV history, or upstream delays). To avoid starving useful work, we
+        # back off aggressively and let callers override via env vars.
+        stall_retry_seconds = 24 * 60 * 60
         try:
             v = os.environ.get("STOCK_DATA_ETF_STALL_RETRY_SECONDS")
             if v is not None and str(v).strip() != "":
                 stall_retry_seconds = max(0, int(v))
         except Exception:
-            stall_retry_seconds = 2 * 60 * 60
+            stall_retry_seconds = 24 * 60 * 60
+
+        # If a code has *no local file* and upstream returns empty, retrying it every run
+        # is usually wasted. Use a longer backoff for missing-file partitions.
+        missing_file_retry_seconds = 7 * 24 * 60 * 60
+        try:
+            v = os.environ.get("STOCK_DATA_ETF_EMPTY_MISSING_FILE_RETRY_SECONDS")
+            if v is not None and str(v).strip() != "":
+                missing_file_retry_seconds = max(0, int(v))
+        except Exception:
+            missing_file_retry_seconds = 7 * 24 * 60 * 60
 
         attempted_recent = _recently_attempted_keys(ds, stall_retry_seconds if stall_retry_seconds > 0 else None)
+        attempted_recent_missing = _recently_attempted_keys(
+            ds,
+            missing_file_retry_seconds if missing_file_retry_seconds > 0 else None,
+        )
 
         for code in etf_codes:
             key = f"ts_code={code.replace('.', '_')}"
             exists = _file_exists_for_code(ds, code)
 
+            # Backoff for recently attempted partitions.
+            if exists:
+                if key in attempted_recent:
+                    continue
+            else:
+                if key in attempted_recent_missing:
+                    continue
+
             if date_col is None:
                 # fund_div: no reliable incremental time key; only run if missing locally or force-refresh is requested.
                 force_refresh = (refresh_seconds is not None) and (key not in completed_recent)
-                if (not exists or force_refresh) and (key not in attempted_recent):
-                    tasks.append((ds, code))
+                if (not exists or force_refresh):
+                    (tasks_existing_first if exists else tasks_missing_file_last).append((ds, code))
                 continue
 
             local_max = max_by_code.get(code) if exists else None
@@ -198,7 +225,11 @@ def run_etf(
             force_refresh = (refresh_seconds is not None) and (key not in completed_recent)
 
             if (behind or force_refresh) and (key not in attempted_recent):
-                tasks.append((ds, code))
+                (tasks_existing_first if exists else tasks_missing_file_last).append((ds, code))
+
+    # Prioritize updating partitions that already exist locally (usually incremental tail)
+    # before trying to create brand new partitions (more likely to be empty).
+    tasks = tasks_existing_first + tasks_missing_file_last
 
     if not tasks:
         logger.info("etf: nothing to do (datasets=%s)", ",".join(datasets))
@@ -214,6 +245,17 @@ def run_etf(
 
     running: set[tuple[str, str]] = set()
     running_lock = threading.Lock()
+
+    # Reduce log spam for empty responses: log first N samples per dataset, then summarize.
+    empty_lock = threading.Lock()
+    empty_skipped: dict[str, int] = {}
+    empty_log_limit = 20
+    try:
+        v = os.environ.get("STOCK_DATA_ETF_EMPTY_LOG_LIMIT")
+        if v is not None and str(v).strip() != "":
+            empty_log_limit = max(0, int(v))
+    except Exception:
+        empty_log_limit = 20
 
     def _existing_ts_code_df(dataset: str, ts_code: str) -> pd.DataFrame | None:
         safe = ts_code.replace(".", "_")
@@ -286,7 +328,14 @@ def run_etf(
                     row_count=0,
                     error=f"empty response for {dataset}",
                 )
-                logger.warning("etf: skipped empty response dataset=%s ts_code=%s", dataset, ts_code)
+
+                with empty_lock:
+                    empty_skipped[dataset] = int(empty_skipped.get(dataset, 0)) + 1
+                    n = empty_skipped[dataset]
+                if empty_log_limit > 0 and n <= empty_log_limit:
+                    logger.warning("etf: skipped empty response dataset=%s ts_code=%s", dataset, ts_code)
+                else:
+                    logger.debug("etf: skipped empty response dataset=%s ts_code=%s", dataset, ts_code)
                 return 0
 
             if existing is not None and date_col and not df_new.empty:
@@ -350,5 +399,15 @@ def run_etf(
                 sample = "; ".join([f"{ds}:{code}" for (ds, code, _) in failed[:10]])
                 logger.error("etf: %d task(s) failed; sample: %s", len(failed), sample)
                 raise RuntimeError(f"etf: {len(failed)} task(s) failed; sample: {sample}")
+
+            with empty_lock:
+                empty_summary = dict(empty_skipped)
+            if empty_summary:
+                parts = ", ".join([f"{k}={v}" for k, v in sorted(empty_summary.items())])
+                logger.warning(
+                    "etf: empty responses skipped (%s). Consider increasing backoff via "
+                    "STOCK_DATA_ETF_STALL_RETRY_SECONDS / STOCK_DATA_ETF_EMPTY_MISSING_FILE_RETRY_SECONDS.",
+                    parts,
+                )
 
     logger.info("etf: completed (tasks=%d)", len(tasks))
