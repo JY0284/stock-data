@@ -403,8 +403,15 @@ def test_finance_tools(tmp_path: Path) -> None:
     assert mb["rows"][0]["end_date"] == "20241231"
 
 
-def test_us_tools(tmp_path: Path) -> None:
+def test_us_tools(tmp_path: Path, monkeypatch: "pytest.MonkeyPatch") -> None:
     store_dir = _make_tiny_store(tmp_path)
+
+    # Ensure this integration test is independent of repo-level stock_data.yaml.
+    # We explicitly enable everything (default behavior) by pointing at an empty config.
+    cfg_path = tmp_path / "stock_data_test.yaml"
+    cfg_path.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("STOCK_DATA_CONFIG", str(cfg_path))
+
     agent_tools.clear_store_cache(str(store_dir))
 
     basics = agent_tools.get_us_basic(limit=10, store_dir=str(store_dir))

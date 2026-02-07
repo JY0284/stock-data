@@ -12,6 +12,7 @@ from typing import Any, Literal
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 
+from stock_data.config import get_config, get_dataset_categories
 from stock_data.datasets import DATASETS, ALL_DATASET_NAMES, dataset_info_map
 from stock_data.runner import RunConfig
 from stock_data.stats import fetch_stats_json
@@ -99,14 +100,31 @@ def _df_to_json_records(df) -> list[dict[str, Any]]:
     return _json.loads(df.to_json(orient="records", date_format="iso"))
 
 
-def _html_index(settings: WebSettings, *, base_url: str) -> str:
-        datasets = "\n".join(
-                f"<li><code>{d.name}</code> — {d.desc_zh} <span class=\"muted\">/ {d.desc_en}</span></li>" for d in DATASETS
-        )
+def _html_index(
+    settings: WebSettings,
+    *,
+    base_url: str,
+    datasets_enabled_html: str,
+    datasets_disabled_html: str,
+    disabled_count: int,
+    show_disabled: bool,
+) -> str:
+    base_url = (base_url or "/").rstrip("/") + "/"
 
-        base_url = (base_url or "/").rstrip("/") + "/"
+    disabled_section = ""
+    if show_disabled:
+        disabled_section = f"""
+        <details>
+            <summary>已禁用数据集（{disabled_count}）</summary>
+            <ul class=\"datasets\">{datasets_disabled_html}</ul>
+        </details>
+        """
+    else:
+        disabled_section = f"""
+        <p class=\"muted\">有 {disabled_count} 个数据集在 Web 侧被禁用。若要显示禁用列表：打开 <code>/?show_disabled=1</code>。</p>
+        """
 
-        return f"""<!doctype html>
+    return f"""<!doctype html>
 <html lang=\"zh-CN\">
   <head>
     <meta charset=\"utf-8\" />
@@ -130,6 +148,10 @@ def _html_index(settings: WebSettings, *, base_url: str) -> str:
             details {{ border: 1px dashed var(--border); border-radius: 10px; padding: 0.75rem 0.9rem; background: #fff; }}
             summary {{ cursor: pointer; font-weight: 600; }}
             ul {{ margin-top: 0.5rem; }}
+            ul.datasets {{ list-style: none; padding-left: 0; }}
+            ul.datasets li {{ padding: 0.35rem 0; border-bottom: 1px dashed var(--border); }}
+            .badge {{ display: inline-block; font-size: 12px; padding: 0.1rem 0.45rem; border-radius: 999px; border: 1px solid var(--border); background: var(--card); margin-left: 0.35rem; }}
+            .disabled {{ opacity: 0.6; }}
     </style>
   </head>
   <body>
@@ -319,9 +341,9 @@ curl -s '{base_url}resolve?symbol_or_ts_code=300888.SZ'</pre>
         </div>
 
         <h2>数据集（Dataset）</h2>
-    <ul>
-      {datasets}
-    </ul>
+                <p class=\"muted\">下面展示 Web 侧可用的数据集；可用性由 <code>stock_data.yaml</code> / <code>STOCK_DATA_CONFIG</code> 控制。</p>
+                <ul class=\"datasets\">{datasets_enabled_html}</ul>
+                {disabled_section}
 
     <h2>限制（Limit）</h2>
     <p>默认 <code>limit={settings.default_limit}</code>；最大 <code>limit={settings.max_limit}</code>（用于防止误操作拉爆内存）。</p>
@@ -347,6 +369,49 @@ curl -s '{base_url}resolve?symbol_or_ts_code=300888.SZ'</pre>
 
 def create_app(*, settings: WebSettings | None = None) -> FastAPI:
     settings = settings or WebSettings()
+    
+    # Load config for dataset filtering
+    app_config = get_config(store_dir=settings.store_dir)
+    dataset_categories = get_dataset_categories()
+    
+    # Get web-enabled datasets
+    web_enabled_datasets = set(app_config.filter_datasets_for_web(ALL_DATASET_NAMES, dataset_categories))
+
+    def _cfg_badges(ds_name: str, category: str) -> str:
+        cfg = app_config.get_dataset_config(ds_name, category)
+        web = "web:on" if cfg.enable_web else "web:off"
+        agent = "agent:on" if cfg.enable_agent else "agent:off"
+        ingest = "ingest:skip" if cfg.skip_ingestion else "ingest:on"
+        stat = "stat:skip" if cfg.skip_stat else "stat:on"
+        return (
+            f"<span class=\"badge\">{web}</span>"
+            f"<span class=\"badge\">{agent}</span>"
+            f"<span class=\"badge\">{ingest}</span>"
+            f"<span class=\"badge\">{stat}</span>"
+        )
+
+    datasets_enabled_items: list[str] = []
+    datasets_disabled_items: list[str] = []
+    for d in DATASETS:
+        cfg = app_config.get_dataset_config(d.name, d.category)
+        badges = _cfg_badges(d.name, d.category)
+        li = (
+            f"<li><code>{d.name}</code> <span class=\"muted\">[{d.category}]</span> "
+            f"— {d.desc_zh} <span class=\"muted\">/ {d.desc_en}</span> {badges}</li>"
+        )
+        if cfg.enable_web and d.name in web_enabled_datasets:
+            datasets_enabled_items.append(li)
+        else:
+            datasets_disabled_items.append(li.replace("<li>", "<li class=\"disabled\">", 1))
+
+    datasets_enabled_html = "\n".join(datasets_enabled_items) or "<li class=\"muted\">(无)</li>"
+    datasets_disabled_html = "\n".join(datasets_disabled_items) or "<li class=\"muted\">(无)</li>"
+    disabled_count = len(datasets_disabled_items)
+    
+    def _check_dataset_enabled(dataset: str) -> None:
+        """Raise ValueError if dataset is not enabled for web access."""
+        if dataset not in web_enabled_datasets:
+            raise ValueError(f"Dataset '{dataset}' is not enabled for web access")
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -382,8 +447,17 @@ def create_app(*, settings: WebSettings | None = None) -> FastAPI:
         return JSONResponse(status_code=404, content={"error": str(exc)})
 
     @app.get("/", response_class=HTMLResponse, include_in_schema=False)
-    async def index(request: Request):
-        return HTMLResponse(_html_index(settings, base_url=str(request.base_url)))
+    async def index(request: Request, show_disabled: bool = False):
+        return HTMLResponse(
+            _html_index(
+                settings,
+                base_url=str(request.base_url),
+                datasets_enabled_html=datasets_enabled_html,
+                datasets_disabled_html=datasets_disabled_html,
+                disabled_count=disabled_count,
+                show_disabled=show_disabled,
+            )
+        )
 
     @app.get("/health")
     async def health():
@@ -414,6 +488,9 @@ def create_app(*, settings: WebSettings | None = None) -> FastAPI:
     async def datasets(lang: Literal["both", "en", "zh"] = "both"):
         out: list[dict[str, Any]] = []
         for d in DATASETS:
+            # Only show datasets enabled for web access
+            if d.name not in web_enabled_datasets:
+                continue
             item = {
                 "name": d.name,
                 "category": d.category,
@@ -454,6 +531,9 @@ def create_app(*, settings: WebSettings | None = None) -> FastAPI:
         if ds not in set(ALL_DATASET_NAMES) | {"trade_cal"}:
             # trade_cal is in ALL_DATASET_NAMES today, but keep this tolerant.
             raise ValueError(f"Unknown dataset: {ds}")
+
+        # Check if dataset is enabled for web access
+        _check_dataset_enabled(ds)
 
         where_obj = _parse_where_json(where)
         where_obj = dict(where_obj or {})
@@ -496,6 +576,7 @@ def create_app(*, settings: WebSettings | None = None) -> FastAPI:
         format: Literal["json", "csv"] = Query("json"),
         cache: bool = Query(True),
     ):
+        _check_dataset_enabled("index_basic")
         store: StockStore = app.state.store
         lim = _clamp_limit(limit, default_limit=settings.default_limit, max_limit=settings.max_limit)
         df = store.read("index_basic", limit=lim, cache=cache)
@@ -514,6 +595,7 @@ def create_app(*, settings: WebSettings | None = None) -> FastAPI:
         format: Literal["json", "csv"] = Query("json"),
         cache: bool = Query(True),
     ):
+        _check_dataset_enabled("index_daily")
         store: StockStore = app.state.store
         lim = _clamp_limit(limit, default_limit=settings.default_limit, max_limit=settings.max_limit)
         cols = _parse_columns(columns)
@@ -537,6 +619,7 @@ def create_app(*, settings: WebSettings | None = None) -> FastAPI:
         format: Literal["json", "csv"] = Query("json"),
         cache: bool = Query(True),
     ):
+        _check_dataset_enabled("fund_basic")
         store: StockStore = app.state.store
         lim = _clamp_limit(limit, default_limit=settings.default_limit, max_limit=settings.max_limit)
         df = store.read("fund_basic", limit=lim, cache=cache)
@@ -555,6 +638,7 @@ def create_app(*, settings: WebSettings | None = None) -> FastAPI:
         format: Literal["json", "csv"] = Query("json"),
         cache: bool = Query(True),
     ):
+        _check_dataset_enabled("fund_nav")
         store: StockStore = app.state.store
         lim = _clamp_limit(limit, default_limit=settings.default_limit, max_limit=settings.max_limit)
         cols = _parse_columns(columns)
@@ -583,6 +667,7 @@ def create_app(*, settings: WebSettings | None = None) -> FastAPI:
         format: Literal["json", "csv"] = Query("json"),
         cache: bool = Query(True),
     ):
+        _check_dataset_enabled("fund_share")
         store: StockStore = app.state.store
         lim = _clamp_limit(limit, default_limit=settings.default_limit, max_limit=settings.max_limit)
         cols = _parse_columns(columns)
@@ -608,6 +693,7 @@ def create_app(*, settings: WebSettings | None = None) -> FastAPI:
         format: Literal["json", "csv"] = Query("json"),
         cache: bool = Query(True),
     ):
+        _check_dataset_enabled("fund_div")
         store: StockStore = app.state.store
         lim = _clamp_limit(limit, default_limit=settings.default_limit, max_limit=settings.max_limit)
         cols = _parse_columns(columns)
@@ -633,6 +719,7 @@ def create_app(*, settings: WebSettings | None = None) -> FastAPI:
         format: Literal["json", "csv"] = Query("json"),
         cache: bool = Query(True),
     ):
+        _check_dataset_enabled("dividend")
         store: StockStore = app.state.store
         lim = _clamp_limit(limit, default_limit=settings.default_limit, max_limit=settings.max_limit)
         cols = _parse_columns(columns)
@@ -661,6 +748,7 @@ def create_app(*, settings: WebSettings | None = None) -> FastAPI:
         format: Literal["json", "csv"] = Query("json"),
         cache: bool = Query(True),
     ):
+        _check_dataset_enabled("fina_audit")
         store: StockStore = app.state.store
         lim = _clamp_limit(limit, default_limit=settings.default_limit, max_limit=settings.max_limit)
         cols = _parse_columns(columns)
@@ -689,6 +777,8 @@ def create_app(*, settings: WebSettings | None = None) -> FastAPI:
         format: Literal["json", "csv"] = Query("json"),
         cache: bool = Query(True),
     ):
+        _check_dataset_enabled("daily")
+        _check_dataset_enabled("adj_factor")
         store: StockStore = app.state.store
         df = store.daily_adj(
             ts_code,
@@ -728,6 +818,7 @@ def create_app(*, settings: WebSettings | None = None) -> FastAPI:
         format: Literal["json", "csv"] = Query("json"),
         cache: bool = Query(True),
     ):
+        _check_dataset_enabled(dataset)
         store: StockStore = app.state.store
         lim = _clamp_limit(limit, default_limit=settings.default_limit, max_limit=settings.max_limit)
         cols = _parse_columns(columns)
@@ -751,9 +842,10 @@ def create_app(*, settings: WebSettings | None = None) -> FastAPI:
     # -----------------------------
     @app.get("/us")
     async def us_list():
+        ds = [d for d in ["us_basic", "us_tradecal", "us_daily"] if d in web_enabled_datasets]
         return {
-            "datasets": ["us_basic", "us_tradecal", "us_daily"],
-            "count": 3,
+            "datasets": ds,
+            "count": len(ds),
         }
 
     @app.get("/us/basic")
@@ -765,6 +857,7 @@ def create_app(*, settings: WebSettings | None = None) -> FastAPI:
         format: Literal["json", "csv"] = Query("json"),
         cache: bool = Query(True),
     ):
+        _check_dataset_enabled("us_basic")
         store: StockStore = app.state.store
         lim = _clamp_limit(limit, default_limit=settings.default_limit, max_limit=settings.max_limit)
         cols = _parse_columns(columns)
@@ -783,6 +876,7 @@ def create_app(*, settings: WebSettings | None = None) -> FastAPI:
         format: Literal["json", "csv"] = Query("json"),
         cache: bool = Query(True),
     ):
+        _check_dataset_enabled("us_tradecal")
         store: StockStore = app.state.store
         df = store.us_tradecal(start_date=start_date, end_date=end_date, is_open=is_open, cache=cache)
         cols = _parse_columns(columns)
@@ -807,6 +901,7 @@ def create_app(*, settings: WebSettings | None = None) -> FastAPI:
         format: Literal["json", "csv"] = Query("json"),
         cache: bool = Query(True),
     ):
+        _check_dataset_enabled("us_daily")
         store: StockStore = app.state.store
         lim = _clamp_limit(limit, default_limit=settings.default_limit, max_limit=settings.max_limit)
         cols = _parse_columns(columns)

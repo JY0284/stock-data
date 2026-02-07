@@ -1,0 +1,84 @@
+# stock_data Configuration File
+# ================================
+# This file controls which datasets are included/excluded from various operations.
+#
+# Configuration hierarchy (highest to lowest priority):
+#   1. Per-dataset settings in 'datasets' section
+#   2. Per-category settings in 'categories' section
+#   3. Default (all enabled, nothing skipped)
+#
+# Shorthand: You can use `false` to disable everything for a dataset/category,
+# or `true` to enable everything (same as omitting it).
+
+# Global settings (optional, can be overridden by CLI args)
+# store_dir: store
+# rpm: 500
+# workers: 12
+
+# Web service settings (optional)
+# web:
+#   host: 0.0.0.0
+#   port: 8000
+
+# Category-level configuration
+# Categories: basic, market, finance, etf, macro, us, us_index
+# These settings apply to all datasets in a category unless overridden per-dataset.
+categories:
+  # Example: Skip all US datasets from ingestion but still enable for reading
+  # us:
+  #   skip_ingestion: true
+  #   skip_stat: false
+  #   enable_web: true
+  #   enable_agent: true
+
+  # Example: Disable all macro data entirely (won't update, show in stat, web, or agent)
+  # macro: false
+
+  # Disable all US datasets (us_basic/us_tradecal/us_daily)
+  us: false
+
+  # Disable all derived US index datasets
+  us_index: false
+
+# Per-dataset configuration
+# Dataset names: stock_basic, trade_cal, daily, adj_factor, etc.
+# See `stock-data datasets` for full list.
+datasets:
+  # Example: Skip us_daily from update/backfill but still show in web/agent
+  # us_daily:
+  #   skip_ingestion: true
+  #   skip_stat: false
+  #   enable_web: true
+  #   enable_agent: true
+
+  # Example: Completely disable a dataset (shorthand)
+  # us_tradecal: false
+
+  # Example: Only skip from stat output (useful for large datasets)
+  # fund_nav:
+  #   skip_stat: true
+
+  # Example: Disable web/agent access but still update
+  # us_basic:
+  #   skip_ingestion: false
+  #   enable_web: false
+  #   enable_agent: false
+
+# ============================================================================
+# Available options for each dataset/category:
+#
+# skip_ingestion: bool (default: false)
+#   If true, this dataset will be skipped during `stock-data update` and
+#   `stock-data backfill` commands.
+#
+# skip_stat: bool (default: false)
+#   If true, this dataset will be excluded from `stock-data stat` output.
+#
+# enable_web: bool (default: true)
+#   If false, this dataset will not be accessible via the web service API.
+#   Requests to access this dataset will return an error.
+#
+# enable_agent: bool (default: true)
+#   If false, this dataset will not be accessible via agent tools.
+#   Calling agent tool functions for this dataset will raise ValueError.
+# ============================================================================

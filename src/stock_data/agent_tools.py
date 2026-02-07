@@ -22,14 +22,36 @@ from typing import Any, Literal
 
 import pandas as pd
 
+from stock_data.config import get_config, get_dataset_categories
 from stock_data.store import How, ResolvedSymbol, StockStore, open_store
 
 # Module-level store cache for repeated calls (singleton pattern for agents).
 _store_cache: dict[str, StockStore] = {}
 
+# Config cache for agent tools
+_agent_config_cache: dict[str, set[str]] = {}
+
+
+def _get_agent_enabled_datasets(store_dir: str = "store") -> set[str]:
+    """Get the set of datasets enabled for agent access."""
+    if store_dir not in _agent_config_cache:
+        from stock_data.datasets import ALL_DATASET_NAMES
+        app_config = get_config(store_dir=store_dir)
+        dataset_categories = get_dataset_categories()
+        enabled = app_config.filter_datasets_for_agent(ALL_DATASET_NAMES, dataset_categories)
+        _agent_config_cache[store_dir] = set(enabled)
+    return _agent_config_cache[store_dir]
+
+
+def _check_agent_dataset_enabled(dataset: str, store_dir: str = "store") -> None:
+    """Raise ValueError if dataset is not enabled for agent access."""
+    enabled = _get_agent_enabled_datasets(store_dir)
+    if dataset not in enabled:
+        raise ValueError(f"Dataset '{dataset}' is not enabled for agent access")
+
 
 def clear_store_cache(store_dir: str | None = None) -> None:
-    """Clear the cached `StockStore` instance(s).
+    """Clear the cached `StockStore` instance(s) and config cache.
 
     This is mainly useful for tests (to avoid cross-test leakage) and for long-running
     agent sessions after the underlying store has been updated.
@@ -40,8 +62,10 @@ def clear_store_cache(store_dir: str | None = None) -> None:
     if store_dir is None:
         stores = list(_store_cache.values())
         _store_cache.clear()
+        _agent_config_cache.clear()
     else:
         s = _store_cache.pop(store_dir, None)
+        _agent_config_cache.pop(store_dir, None)
         stores = [s] if s is not None else []
 
     for st in stores:
@@ -50,6 +74,12 @@ def clear_store_cache(store_dir: str | None = None) -> None:
         except Exception:
             # Best-effort cleanup.
             pass
+
+    # Config is cached globally; clear it so tests and long-running processes
+    # can change STOCK_DATA_CONFIG / config files without restarting.
+    from stock_data.config import clear_config_cache
+
+    clear_config_cache()
 
 
 def _get_store(store_dir: str = "store") -> StockStore:
@@ -189,6 +219,7 @@ def get_stock_basic(
         offset: Skip first N rows (for pagination, 0-indexed)
         limit: Max rows to return (default 20, max 100)
     """
+    _check_agent_dataset_enabled("stock_basic", store_dir)
     store = _get_store(store_dir)
     
     # Default to essential columns for list view
@@ -218,6 +249,7 @@ def get_stock_basic_detail(
     store_dir: str = "store",
 ) -> dict[str, Any]:
     """Get detailed stock basic info for a single stock (all columns)."""
+    _check_agent_dataset_enabled("stock_basic", store_dir)
     store = _get_store(store_dir)
     df = store.stock_basic(ts_code=ts_code)
     return _single_row_payload(df)
@@ -230,6 +262,7 @@ def get_stock_company(
     store_dir: str = "store",
 ) -> dict[str, Any]:
     """Get company profile for a ts_code."""
+    _check_agent_dataset_enabled("stock_company", store_dir)
     store = _get_store(store_dir)
     df = store.stock_company(ts_code=ts_code, columns=columns)
     return _single_row_payload(df)
@@ -430,6 +463,7 @@ def get_daily_prices(
 
     Date format: YYYYMMDD for `start_date`/`end_date`.
     """
+    _check_agent_dataset_enabled("daily", store_dir)
     store = _get_store(store_dir)
     if columns is None:
         columns = ["trade_date", "open", "high", "low", "close", "vol", "pct_chg"]
@@ -461,6 +495,7 @@ def get_adj_factor(
 
     Date format: YYYYMMDD for `start_date`/`end_date`.
     """
+    _check_agent_dataset_enabled("adj_factor", store_dir)
     store = _get_store(store_dir)
     df = store.adj_factor(ts_code, start_date=start_date, end_date=end_date)
     if "trade_date" in df.columns:
@@ -1087,6 +1122,7 @@ def get_us_basic(
         columns: Columns to return (default is a compact list view).
         offset/limit: Pagination.
     """
+    _check_agent_dataset_enabled("us_basic", store_dir)
     store = _get_store(store_dir)
 
     if columns is None:
@@ -1117,6 +1153,7 @@ def get_us_basic_detail(
     store_dir: str = "store",
 ) -> dict[str, Any]:
     """Get full US stock basic info for a single code."""
+    _check_agent_dataset_enabled("us_basic", store_dir)
     store = _get_store(store_dir)
     df = store.us_basic(ts_code=ts_code, columns=None, cache=True)
     return _single_row_payload(df)
@@ -1138,6 +1175,7 @@ def get_us_tradecal(
     Local dataset: `us_tradecal` (snapshot parquet).
     Date format: YYYYMMDD.
     """
+    _check_agent_dataset_enabled("us_tradecal", store_dir)
     store = _get_store(store_dir)
     df = store.us_tradecal(start_date=start_date, end_date=end_date, is_open=is_open, cache=True)
     if date is not None and "cal_date" in df.columns:
@@ -1167,6 +1205,7 @@ def get_us_daily_prices(
     Local dataset: `us_daily` (trade_date-partitioned parquet).
     Date format: YYYYMMDD.
     """
+    _check_agent_dataset_enabled("us_daily", store_dir)
     store = _get_store(store_dir)
     df = store.us_daily(ts_code, start_date=start_date, end_date=end_date, columns=None, cache=True)
     df = _sort_desc(df, "trade_date")
@@ -1201,6 +1240,7 @@ def get_lpr(
     - This dataset is stored as a snapshot (single parquet file) and is typically small.
     - `start_date`/`end_date` do in-memory filtering on the `date` column (YYYYMMDD).
     """
+    _check_agent_dataset_enabled("lpr", store_dir)
     store = _get_store(store_dir)
     df = store.read("lpr", columns=None)
     if date is not None and "date" in df.columns:
@@ -1234,6 +1274,7 @@ def get_cpi(
     - Stored as a snapshot (single parquet file).
     - `start_month`/`end_month` filter the `month` column (YYYYMM).
     """
+    _check_agent_dataset_enabled("cpi", store_dir)
     store = _get_store(store_dir)
     df = store.read("cpi", columns=None)
     if month is not None and "month" in df.columns:
@@ -1267,6 +1308,7 @@ def get_cn_sf(
     - Stored as a snapshot (single parquet file).
     - `start_month`/`end_month` filter the `month` column (YYYYMM).
     """
+    _check_agent_dataset_enabled("cn_sf", store_dir)
     store = _get_store(store_dir)
     df = store.read("cn_sf", columns=None)
     if month is not None and "month" in df.columns:
@@ -1300,6 +1342,7 @@ def get_cn_m(
     - Stored as a snapshot (single parquet file).
     - `start_month`/`end_month` filter the `month` column (YYYYMM).
     """
+    _check_agent_dataset_enabled("cn_m", store_dir)
     store = _get_store(store_dir)
     df = store.read("cn_m", columns=None)
     if month is not None and "month" in df.columns:

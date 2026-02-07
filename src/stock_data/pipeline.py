@@ -4,6 +4,7 @@ import logging
 import os
 
 from stock_data.runner import RunConfig
+from stock_data.config import get_config, get_dataset_categories
 from stock_data.datasets import ALL_DATASET_NAMES, parse_datasets
 from stock_data.stats import write_stat_json_file
 from stock_data.jobs.us_index import get_us_index_names
@@ -23,6 +24,15 @@ def _ensure_dirs(cfg: RunConfig) -> None:
 def backfill(cfg: RunConfig, *, token: str, start_date: str, end_date: str, datasets: str) -> None:
     _ensure_dirs(cfg)
     selected = parse_datasets(datasets)
+
+    # Apply config filtering for ingestion
+    app_config = get_config(store_dir=cfg.store_dir)
+    dataset_categories = get_dataset_categories()
+    selected = app_config.filter_datasets_for_ingestion(selected, dataset_categories)
+
+    if not selected:
+        logger.info("No datasets to backfill after applying config filters")
+        return
 
     from stock_data.storage.duckdb_catalog import DuckDBCatalog
     from stock_data.jobs.basic import run_basic
@@ -104,6 +114,15 @@ def backfill(cfg: RunConfig, *, token: str, start_date: str, end_date: str, data
 def update(cfg: RunConfig, *, token: str, end_date: str, datasets: str) -> None:
     _ensure_dirs(cfg)
     selected = parse_datasets(datasets)
+
+    # Apply config filtering for ingestion
+    app_config = get_config(store_dir=cfg.store_dir)
+    dataset_categories = get_dataset_categories()
+    selected = app_config.filter_datasets_for_ingestion(selected, dataset_categories)
+
+    if not selected:
+        logger.info("No datasets to update after applying config filters")
+        return
 
     from stock_data.storage.duckdb_catalog import DuckDBCatalog
     from stock_data.jobs.basic import run_basic

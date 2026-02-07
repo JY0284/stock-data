@@ -218,9 +218,22 @@ def _fetch_stats(cfg: RunConfig, dataset: str, *, try_duckdb: bool) -> DatasetSt
     )
 
 
-def fetch_stats_json(cfg: RunConfig, *, datasets: str = "all") -> list[dict[str, Any]]:
-    """Return dataset stats as JSON-serializable list of dicts."""
+def fetch_stats_json(cfg: RunConfig, *, datasets: str = "all", apply_config_filter: bool = False) -> list[dict[str, Any]]:
+    """Return dataset stats as JSON-serializable list of dicts.
+    
+    Args:
+        cfg: Run configuration
+        datasets: Comma-separated dataset names or 'all'
+        apply_config_filter: If True, apply config-based filtering (skip_stat)
+    """
     selected = _parse_datasets(datasets)
+
+    if apply_config_filter:
+        from stock_data.config import get_config, get_dataset_categories
+        app_config = get_config(store_dir=cfg.store_dir)
+        dataset_categories = get_dataset_categories()
+        selected = app_config.filter_datasets_for_stat(selected, dataset_categories)
+
     try_duckdb = True
     stats = [_fetch_stats(cfg, ds, try_duckdb=try_duckdb) for ds in selected]
 
@@ -245,9 +258,17 @@ def write_stat_json_file(
     path: str,
     *,
     datasets: str = "all",
+    apply_config_filter: bool = False,
 ) -> None:
-    """Write stat JSON to a file (same shape as /stat API) for UI fallback."""
-    datasets_list = fetch_stats_json(cfg, datasets=datasets)
+    """Write stat JSON to a file (same shape as /stat API) for UI fallback.
+    
+    Args:
+        cfg: Run configuration
+        path: Output file path
+        datasets: Comma-separated dataset names or 'all'
+        apply_config_filter: If True, apply config-based filtering (skip_stat)
+    """
+    datasets_list = fetch_stats_json(cfg, datasets=datasets, apply_config_filter=apply_config_filter)
     payload: dict[str, Any] = {
         "datasets": datasets_list,
         "count": len(datasets_list),
@@ -260,8 +281,21 @@ def write_stat_json_file(
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
 
-def print_stats(cfg: RunConfig, *, datasets: str = "all") -> None:
+def print_stats(cfg: RunConfig, *, datasets: str = "all", apply_config_filter: bool = True) -> None:
+    """Print dataset statistics to console.
+    
+    Args:
+        cfg: Run configuration
+        datasets: Comma-separated dataset names or 'all'
+        apply_config_filter: If True, apply config-based filtering (skip_stat). Defaults to True for CLI.
+    """
     selected = _parse_datasets(datasets)
+
+    if apply_config_filter:
+        from stock_data.config import get_config, get_dataset_categories
+        app_config = get_config(store_dir=cfg.store_dir)
+        dataset_categories = get_dataset_categories()
+        selected = app_config.filter_datasets_for_stat(selected, dataset_categories)
 
     # Try to read ingestion_state from DuckDB (read-only). If DuckDB is locked,
     # we still print filesystem-only stats from Parquet.

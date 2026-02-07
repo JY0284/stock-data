@@ -8,12 +8,23 @@ from fastapi.testclient import TestClient
 from stock_data.web_service import WebSettings, create_app
 
 
+def _set_test_config(monkeypatch, tmp_path: Path, yaml_text: str) -> None:
+    cfg_path = tmp_path / "stock_data_test_config.yaml"
+    cfg_path.write_text(yaml_text, encoding="utf-8")
+    monkeypatch.setenv("STOCK_DATA_CONFIG", str(cfg_path))
+    from stock_data.config import clear_config_cache
+
+    clear_config_cache()
+
+
 def _write_parquet(path: Path, df: pd.DataFrame) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(path, index=False)
 
 
-def test_web_service_us_endpoints(tmp_path: Path) -> None:
+def test_web_service_us_endpoints(tmp_path: Path, monkeypatch) -> None:
+    # Force-enable US datasets regardless of repo-level stock_data.yaml
+    _set_test_config(monkeypatch, tmp_path, """categories: {}\n""")
     store_dir = tmp_path / "store"
 
     us_basic = pd.DataFrame(
