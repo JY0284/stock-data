@@ -11,3 +11,5 @@ wheels/
 
 store/
 .ipynb_checkpoints/
+tasks.json
+.python-version
