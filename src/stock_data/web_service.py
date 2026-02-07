@@ -613,6 +613,80 @@ def create_app(*, settings: WebSettings | None = None) -> FastAPI:
             return Response(content=df.to_csv(index=False), media_type="text/csv; charset=utf-8")
         return {"dataset": "index_daily", "ts_code": ts_code, "rows": int(len(df)), "data": _df_to_json_records(df)}
 
+    # -----------------------------
+    # Convenience APIs: market extras
+    # -----------------------------
+    @app.get("/moneyflow")
+    async def moneyflow(
+        ts_code: str | None = Query(None, description="Stock code, e.g. 000001.SZ"),
+        trade_date: str | None = Query(None, description="YYYYMMDD"),
+        start_date: str | None = Query(None, description="YYYYMMDD"),
+        end_date: str | None = Query(None, description="YYYYMMDD"),
+        columns: str | None = Query(None, description="Comma-separated column list"),
+        order_by: str | None = Query(None, description="e.g. trade_date or trade_date desc"),
+        limit: int | None = Query(None, description="Row limit"),
+        format: Literal["json", "csv"] = Query("json"),
+        cache: bool = Query(True),
+    ):
+        _check_dataset_enabled("moneyflow")
+        store: StockStore = app.state.store
+
+        if not (ts_code or trade_date or start_date or end_date):
+            raise ValueError("moneyflow requires at least one filter: ts_code/trade_date/start_date/end_date")
+
+        where_obj: dict[str, str] = {}
+        if ts_code is not None and str(ts_code).strip():
+            where_obj["ts_code"] = str(ts_code).strip()
+        if trade_date is not None and str(trade_date).strip():
+            where_obj["trade_date"] = str(trade_date).strip()
+
+        lim = _clamp_limit(limit, default_limit=settings.default_limit, max_limit=settings.max_limit)
+        cols = _parse_columns(columns)
+
+        df = store.read(
+            "moneyflow",
+            where=where_obj or None,
+            start_date=start_date,
+            end_date=end_date,
+            columns=cols,
+            limit=lim,
+            order_by=order_by,
+            cache=cache,
+        )
+
+        if format == "csv":
+            return Response(content=df.to_csv(index=False), media_type="text/csv; charset=utf-8")
+        return {"dataset": "moneyflow", "rows": int(len(df)), "data": _df_to_json_records(df)}
+
+    @app.get("/fx_daily")
+    async def fx_daily(
+        ts_code: str = Query(..., description="FX pair code, e.g. USDCNH.FXCM"),
+        start_date: str | None = Query(None, description="YYYYMMDD (GMT)"),
+        end_date: str | None = Query(None, description="YYYYMMDD (GMT)"),
+        columns: str | None = Query(None, description="Comma-separated column list"),
+        order_by: str | None = Query(None, description="e.g. trade_date or trade_date desc"),
+        limit: int | None = Query(None, description="Row limit"),
+        format: Literal["json", "csv"] = Query("json"),
+        cache: bool = Query(True),
+    ):
+        _check_dataset_enabled("fx_daily")
+        store: StockStore = app.state.store
+        lim = _clamp_limit(limit, default_limit=settings.default_limit, max_limit=settings.max_limit)
+        cols = _parse_columns(columns)
+        df = store.read(
+            "fx_daily",
+            where={"ts_code": ts_code},
+            start_date=start_date,
+            end_date=end_date,
+            columns=cols,
+            limit=lim,
+            order_by=order_by,
+            cache=cache,
+        )
+        if format == "csv":
+            return Response(content=df.to_csv(index=False), media_type="text/csv; charset=utf-8")
+        return {"dataset": "fx_daily", "ts_code": ts_code, "rows": int(len(df)), "data": _df_to_json_records(df)}
+
     @app.get("/fund_basic")
     async def fund_basic(
         limit: int | None = Query(None, description="Row limit"),

@@ -134,6 +134,22 @@ DATASETS: list[DatasetInfo] = [
         desc_en="ETF/Exchange-traded fund daily bars for a given trade_date (Tushare fund_daily).",
         desc_zh="ETF/场内基金日线行情（指定交易日，使用 Tushare fund_daily 接口）。",
     ),
+    DatasetInfo(
+        name="moneyflow",
+        category="market",
+        partitioning="trade_date",
+        source="tushare: moneyflow",
+        desc_en="A-share stock money flow by trade_date (small/medium/large/extra-large order volumes and amounts, net inflow).",
+        desc_zh="个股资金流向（按交易日；小单/中单/大单/特大单买卖量与金额、净流入等）。",
+    ),
+    DatasetInfo(
+        name="fx_daily",
+        category="market",
+        partitioning="trade_date",
+        source="tushare: fx_daily",
+        desc_en="FX daily quotes (bid/ask OHLC, tick count) for a given trade_date (GMT).",
+        desc_zh="外汇日线行情（按日期；trade_date 为 GMT 日期；包含 bid/ask OHLC、报价笔数等）。",
+    ),
     # ETF专题 datasets
     DatasetInfo(
         name="fund_basic",

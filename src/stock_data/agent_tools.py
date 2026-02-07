@@ -1218,6 +1218,102 @@ def get_us_daily_prices(
 
 
 # -----------------------------------------------------------------------------
+# Market extras (资金流向 / 外汇)
+# -----------------------------------------------------------------------------
+
+def get_moneyflow(
+    *,
+    ts_code: str | None = None,
+    trade_date: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    columns: list[str] | None = None,
+    offset: int = 0,
+    limit: int = 50,
+    store_dir: str = "store",
+) -> dict[str, Any]:
+    """Get A-share stock money flow.
+
+    Local dataset: `moneyflow` (trade_date-partitioned parquet).
+    Doc: https://tushare.pro/document/2?doc_id=170
+    Date format: YYYYMMDD.
+
+    To avoid huge queries, require at least one filter among:
+    - trade_date
+    - ts_code
+    - start_date/end_date
+    """
+    _check_agent_dataset_enabled("moneyflow", store_dir)
+    if not (ts_code or trade_date or start_date or end_date):
+        raise ValueError("moneyflow requires at least one filter: ts_code/trade_date/start_date/end_date")
+
+    store = _get_store(store_dir)
+    where: dict[str, Any] = {}
+    if ts_code is not None and str(ts_code).strip():
+        where["ts_code"] = str(ts_code).strip()
+    if trade_date is not None and str(trade_date).strip():
+        where["trade_date"] = str(trade_date).strip()
+
+    df = store.read(
+        "moneyflow",
+        where=where or None,
+        start_date=start_date,
+        end_date=end_date,
+        columns=None,
+        limit=None,
+        order_by=None,
+        cache=True,
+    )
+    df = _sort_desc(df, "trade_date")
+    if columns:
+        cols = [c for c in columns if c in df.columns]
+        if cols:
+            df = df[cols]
+    limit = min(limit or 50, 500)
+    return _df_to_payload(df, offset=offset, limit=limit)
+
+
+def get_fx_daily(
+    ts_code: str,
+    *,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    columns: list[str] | None = None,
+    offset: int = 0,
+    limit: int = 50,
+    store_dir: str = "store",
+) -> dict[str, Any]:
+    """Get FX daily quotes for a currency pair.
+
+    Local dataset: `fx_daily` (ts_code-partitioned parquet).
+    Doc: https://tushare.pro/document/2?doc_id=179
+    Date format: YYYYMMDD (GMT in upstream; stored as-is).
+    """
+    _check_agent_dataset_enabled("fx_daily", store_dir)
+    if not ts_code or not str(ts_code).strip():
+        raise ValueError("ts_code is required")
+
+    store = _get_store(store_dir)
+    df = store.read(
+        "fx_daily",
+        where={"ts_code": str(ts_code).strip()},
+        start_date=start_date,
+        end_date=end_date,
+        columns=None,
+        limit=None,
+        order_by=None,
+        cache=True,
+    )
+    df = _sort_desc(df, "trade_date")
+    if columns:
+        cols = [c for c in columns if c in df.columns]
+        if cols:
+            df = df[cols]
+    limit = min(limit or 50, 500)
+    return _df_to_payload(df, offset=offset, limit=limit)
+
+
+# -----------------------------------------------------------------------------
 # Macro (宏观)
 # -----------------------------------------------------------------------------
 

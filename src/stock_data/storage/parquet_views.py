@@ -47,6 +47,8 @@ def register_parquet_views(
         "weekly",
         "monthly",
         "etf_daily",
+        "moneyflow",
+        "fx_daily",
         # US stock daily bars.
         "us_daily",
         # US stock indices (derived/calculated).

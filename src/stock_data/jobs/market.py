@@ -379,6 +379,191 @@ def _run_index_daily(
     logger.info("market: completed index_daily (tasks=%d)", len(tasks))
 
 
+def _run_fx_daily(
+    cfg: RunConfig,
+    client: TushareClient,
+    catalog: DuckDBCatalog,
+    w: ParquetWriter,
+    *,
+    start_date: str | None,
+    end_date: str,
+) -> None:
+    """Run ingestion for fx_daily (trade_date-partitioned).
+
+    Doc: https://tushare.pro/document/2?doc_id=179
+
+    This is intentionally implemented like other trade_date-partitioned datasets:
+    - no extra symbol-list dataset required
+    - no required env vars
+
+    We schedule weekdays only (Mon-Fri) because FX daily data is typically 24/5.
+    trade_date is documented as GMT date (often one day behind Beijing).
+
+    Optional env var: STOCK_DATA_FX_EXCHANGE (default "FXCM").
+    """
+    import os
+
+    exchange = os.environ.get("STOCK_DATA_FX_EXCHANGE", "FXCM").strip() or "FXCM"
+
+    # If upstream ends up requiring ts_code, fall back to a small built-in
+    # universe so `update/backfill` works out of the box (no env-var gating).
+    # Kept intentionally small to control cost.
+    default_ts_codes_fxcm = [
+        "USDCNH.FXCM",
+        "EURUSD.FXCM",
+        "USDJPY.FXCM",
+        "GBPUSD.FXCM",
+    ]
+
+    def _weekday_dates(start_yyyymmdd: str, end_yyyymmdd: str) -> list[str]:
+        start_d = parse_yyyymmdd(start_yyyymmdd)
+        end_d = parse_yyyymmdd(end_yyyymmdd)
+        out: list[str] = []
+        cur = start_d
+        while cur <= end_d:
+            # 0=Mon ... 6=Sun
+            if cur.weekday() < 5:
+                out.append(cur.strftime("%Y%m%d"))
+            cur = cur + _dt.timedelta(days=1)
+        return out
+
+    # In update mode, avoid pulling huge windows.
+    cal_start = start_date or "19900101"
+    if start_date is None:
+        last = catalog.last_completed_partition("fx_daily")
+        if last:
+            cal_start = last
+        else:
+            cal_start = _add_days_yyyymmdd(end_date, -120)
+
+    dates_all = _weekday_dates(cal_start, end_date)
+    if start_date is None and dates_all:
+        # Include last day again to make update idempotent.
+        dates_all = dates_all[-120:] if len(dates_all) > 120 else dates_all
+
+    completed = catalog.completed_partitions("fx_daily")
+    dates = [d for d in dates_all if d not in completed]
+    if not dates:
+        logger.info("market: nothing to do for fx_daily (start=%s end=%s)", cal_start, end_date)
+        return
+
+    logger.info(
+        "market: start fx_daily (tasks=%d, workers=%d, rpm=%d, start=%s, end=%s, exchange=%s)",
+        len(dates),
+        cfg.workers,
+        cfg.rpm,
+        cal_start,
+        end_date,
+        exchange,
+    )
+
+    running: set[str] = set()
+    running_lock = threading.Lock()
+
+    def _fetch_and_store(trade_date: str) -> int:
+        key = trade_date
+        catalog.set_state(dataset="fx_daily", partition_key=key, status="running")
+        with running_lock:
+            running.add(trade_date)
+        try:
+            try:
+                df = client.query("fx_daily", trade_date=trade_date, exchange=exchange)
+            except Exception as e:  # noqa: BLE001
+                msg = str(e).lower()
+                needs_ts_code = ("ts_code" in msg) and ("required" in msg or "missing" in msg)
+                if needs_ts_code and exchange.upper() == "FXCM":
+                    parts: list[pd.DataFrame] = []
+                    for ts_code in default_ts_codes_fxcm:
+                        try:
+                            dfi = client.query(
+                                "fx_daily",
+                                ts_code=ts_code,
+                                trade_date=trade_date,
+                                exchange=exchange,
+                            )
+                            if dfi is not None and not getattr(dfi, "empty", False):
+                                parts.append(dfi)
+                        except Exception:
+                            # Keep going; we don't want one pair to block the partition.
+                            logger.debug("market: fx_daily fallback failed ts_code=%s trade_date=%s", ts_code, trade_date)
+                    df = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+                else:
+                    raise
+            if df is None:
+                df = pd.DataFrame()
+
+            # Same "today might be empty" behavior as other market datasets.
+            today = _dt.date.today().strftime("%Y%m%d")
+            if trade_date == today and (getattr(df, "empty", False) or len(getattr(df, "columns", [])) == 0):
+                catalog.set_state(
+                    dataset="fx_daily",
+                    partition_key=key,
+                    status="skipped",
+                    row_count=0,
+                    error="empty response for today; likely not published yet",
+                )
+                logger.info("market: skipped empty today dataset=fx_daily trade_date=%s", trade_date)
+                return 0
+
+            w.write_trade_date_partition("fx_daily", trade_date, df)
+            catalog.set_state(dataset="fx_daily", partition_key=key, status="completed", row_count=int(len(df)))
+            return int(len(df))
+        except Exception as e:  # noqa: BLE001
+            catalog.set_state(dataset="fx_daily", partition_key=key, status="failed", error=str(e))
+            if isinstance(e, (TransientError, RateLimitError)):
+                logger.warning("market: fetch failed fx_daily trade_date=%s (%s)", trade_date, e)
+            else:
+                logger.exception("market: fetch failed fx_daily trade_date=%s", trade_date)
+            raise
+        finally:
+            with running_lock:
+                running.discard(trade_date)
+
+    with ThreadPoolExecutor(max_workers=cfg.workers) as ex:
+        future_to_task = {ex.submit(_fetch_and_store, d): d for d in dates}
+        console = Console(stderr=True)
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
+            console=console,
+            transient=False,
+        ) as progress:
+            ptask = progress.add_task("fx_daily", total=len(future_to_task))
+            failed: list[tuple[str, str]] = []
+
+            for f in as_completed(future_to_task):
+                d = future_to_task[f]
+                try:
+                    rows = f.result()
+                    with running_lock:
+                        running_count = len(running)
+                    progress.update(
+                        ptask,
+                        description=f"fx_daily (running={running_count} failed={len(failed)}) last={d} rows={rows}",
+                    )
+                except Exception as e:  # noqa: BLE001
+                    failed.append((d, str(e)))
+                    with running_lock:
+                        running_count = len(running)
+                    progress.update(
+                        ptask,
+                        description=f"fx_daily (running={running_count} failed={len(failed)}) last=FAILED {d}",
+                    )
+                finally:
+                    progress.advance(ptask, 1)
+
+            if failed:
+                sample = "; ".join([d for (d, _) in failed[:10]])
+                logger.error("market: %d fx_daily task(s) failed; sample: %s", len(failed), sample)
+                raise RuntimeError(f"market: {len(failed)} fx_daily task(s) failed; sample: {sample}")
+
+    logger.info("market: completed fx_daily (tasks=%d)", len(dates))
+
+
 def run_market(
     cfg: RunConfig,
     *,
@@ -400,6 +585,13 @@ def run_market(
     if "index_daily" in datasets:
         _run_index_daily(cfg, client, catalog, w, end_date=end_date, refresh_days=index_daily_refresh_days)
         datasets = [d for d in datasets if d != "index_daily"]
+        if not datasets:
+            return
+
+    # Handle fx_daily separately (FX weekday calendar, not SSE trade_cal).
+    if "fx_daily" in datasets:
+        _run_fx_daily(cfg, client, catalog, w, start_date=start_date, end_date=end_date)
+        datasets = [d for d in datasets if d != "fx_daily"]
         if not datasets:
             return
 
@@ -436,9 +628,9 @@ def run_market(
     date_map: dict[str, list[str]] = {}
 
     # Daily-ish datasets use every open trade date.
-    dailyish = {"daily", "adj_factor", "daily_basic", "stk_limit", "suspend_d", "etf_daily"}
+    dailyish = {"daily", "adj_factor", "daily_basic", "stk_limit", "suspend_d", "etf_daily", "moneyflow"}
     # Note: etf_daily is NOT in must_nonempty because ETFs didn't exist before 2004
-    must_nonempty = {"daily", "adj_factor", "daily_basic", "weekly", "monthly"}
+    must_nonempty = {"daily", "adj_factor", "daily_basic", "moneyflow", "weekly", "monthly"}
 
     def _min_row_count_for(ds: str) -> int | None:
         # In incremental update mode, treat 0-row partitions as incomplete for etf_daily.
@@ -518,7 +710,7 @@ def run_market(
 
     # Sanity check: in backfill mode, daily-ish datasets should cover every open trade date.
     if start_date is not None:
-        dailyish = {"daily", "adj_factor", "daily_basic", "stk_limit", "suspend_d"}
+        dailyish = {"daily", "adj_factor", "daily_basic", "stk_limit", "suspend_d", "moneyflow"}
         for ds in datasets:
             if ds not in dailyish:
                 continue
@@ -577,6 +769,8 @@ def run_market(
                 df_s = client.query("suspend_d", suspend_type="S", trade_date=trade_date)
                 df_r = client.query("suspend_d", suspend_type="R", trade_date=trade_date)
                 df = pd.concat([df_s, df_r], ignore_index=True)
+            elif dataset == "moneyflow":
+                df = client.query("moneyflow", trade_date=trade_date)
             # index_daily is not supported - requires ts_code parameter, cannot query by trade_date alone
             elif dataset == "etf_daily":
                 # Tushare does not provide a separate "etf_daily" endpoint in `pro.query`.

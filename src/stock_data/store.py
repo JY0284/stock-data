@@ -113,6 +113,10 @@ class StockStore:
         "monthly",
         # ETF daily bars are trade_date-partitioned.
         "etf_daily",
+        # Money flow is trade_date-partitioned.
+        "moneyflow",
+        # FX daily quotes are ingested as trade_date partitions.
+        "fx_daily",
         # US daily bars are trade_date-partitioned.
         "us_daily",
     }
