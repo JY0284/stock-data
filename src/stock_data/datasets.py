@@ -307,6 +307,48 @@ DATASETS: list[DatasetInfo] = [
         desc_en="US stock daily bars (OHLCV, vwap, turnover, valuation) for a given trade_date.",
         desc_zh="美股日线行情（指定交易日，OHLCV、成交量、估值指标等）。",
     ),
+
+    # US Stock Index datasets (美股指数 - 本地计算)
+    DatasetInfo(
+        name="us_index_broad",
+        category="us_index",
+        partitioning="trade_date",
+        source="derived: us_daily (equal-weighted all stocks)",
+        desc_en="US Broad Market Index (Wilshire 5000-like). Equal-weighted index of all US stocks. Research-grade approximation.",
+        desc_zh="美股综合指数（类威尔逊5000）。等权重计算的全美股指数，用于研究分析。",
+    ),
+    DatasetInfo(
+        name="us_index_nasdaq",
+        category="us_index",
+        partitioning="trade_date",
+        source="derived: us_daily (NASDAQ stocks, equal-weighted)",
+        desc_en="NASDAQ Composite Index (proxy). Equal-weighted index of NASDAQ-listed stocks. Research-grade approximation.",
+        desc_zh="纳斯达克综合指数（近似）。等权重计算的纳斯达克股票指数，用于研究分析。",
+    ),
+    DatasetInfo(
+        name="us_index_sp500",
+        category="us_index",
+        partitioning="trade_date",
+        source="derived: us_daily (top 500 by volume, vol-weighted)",
+        desc_en="S&P 500 Index (proxy). Top ~500 stocks by volume, volume-weighted. Research-grade approximation.",
+        desc_zh="标普500指数（近似）。按成交量排名前500股票，成交量加权，用于研究分析。",
+    ),
+    DatasetInfo(
+        name="us_index_ndx100",
+        category="us_index",
+        partitioning="trade_date",
+        source="derived: us_daily (top 100 NASDAQ by volume, capped)",
+        desc_en="NASDAQ-100 Index (proxy). Top 100 NASDAQ stocks by volume, capped at 14%. Research-grade approximation.",
+        desc_zh="纳斯达克100指数（近似）。纳斯达克成交量前100股票，单只股票权重上限14%，用于研究分析。",
+    ),
+    DatasetInfo(
+        name="us_index_djia30",
+        category="us_index",
+        partitioning="trade_date",
+        source="derived: us_daily (top 30 by volume, price-weighted)",
+        desc_en="DJIA Index (proxy). Top 30 stocks by volume, price-weighted. Research-grade approximation.",
+        desc_zh="道琼斯工业平均指数（近似）。按成交量排名前30股票，价格加权，用于研究分析。",
+    ),
 ]
 
 

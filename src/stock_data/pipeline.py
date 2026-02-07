@@ -6,6 +6,7 @@ import os
 from stock_data.runner import RunConfig
 from stock_data.datasets import ALL_DATASET_NAMES, parse_datasets
 from stock_data.stats import write_stat_json_file
+from stock_data.jobs.us_index import get_us_index_names
 
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,7 @@ def backfill(cfg: RunConfig, *, token: str, start_date: str, end_date: str, data
     from stock_data.jobs.finance import run_finance
     from stock_data.jobs.etf import run_etf
     from stock_data.jobs.us import run_us
+    from stock_data.jobs.us_index import run_us_index
     from stock_data.jobs.derived import ensure_derived_views
 
     cat = DuckDBCatalog(cfg.duckdb_path, cfg.parquet_dir)
@@ -45,7 +47,8 @@ def backfill(cfg: RunConfig, *, token: str, start_date: str, end_date: str, data
     finance_datasets = {"income", "balancesheet", "cashflow", "forecast", "express", "dividend", "fina_indicator", "fina_audit", "fina_mainbz", "disclosure_date"}
     etf_datasets = {"fund_nav", "fund_share", "fund_div"}
     us_datasets = {"us_basic", "us_tradecal", "us_daily"}
-    market_datasets = [d for d in selected if d not in basic_datasets and d not in macro_datasets and d not in finance_datasets and d not in etf_datasets and d not in us_datasets]
+    us_index_datasets = set(get_us_index_names())
+    market_datasets = [d for d in selected if d not in basic_datasets and d not in macro_datasets and d not in finance_datasets and d not in etf_datasets and d not in us_datasets and d not in us_index_datasets]
 
     # Basic first (universe + calendar).
     run_basic(cfg, token=token, catalog=cat, datasets=[d for d in selected if d in basic_datasets], start_date=start_date, end_date=end_date)
@@ -79,6 +82,20 @@ def backfill(cfg: RunConfig, *, token: str, start_date: str, end_date: str, data
         end_date=end_date,
     )
 
+    # US indices (derived from us_daily).
+    selected_us_indices = [d for d in selected if d in us_index_datasets]
+    # Auto-calculate all US indices if us_daily was selected (even if indices weren't explicitly selected)
+    if "us_daily" in selected and not selected_us_indices:
+        selected_us_indices = list(us_index_datasets)
+    if selected_us_indices:
+        run_us_index(
+            cfg,
+            catalog=cat,
+            indices=selected_us_indices,
+            start_date=start_date,
+            end_date=end_date,
+        )
+
     ensure_derived_views(cat)
     cat.export_ingestion_state_snapshot()
     write_stat_json_file(cfg, os.path.join(cfg.store_dir, "data-status.json"), datasets="all")
@@ -95,6 +112,7 @@ def update(cfg: RunConfig, *, token: str, end_date: str, datasets: str) -> None:
     from stock_data.jobs.finance import run_finance
     from stock_data.jobs.etf import run_etf
     from stock_data.jobs.us import run_us
+    from stock_data.jobs.us_index import run_us_index
     from stock_data.jobs.derived import ensure_derived_views
 
     cat = DuckDBCatalog(cfg.duckdb_path, cfg.parquet_dir)
@@ -110,7 +128,8 @@ def update(cfg: RunConfig, *, token: str, end_date: str, datasets: str) -> None:
     finance_datasets = {"income", "balancesheet", "cashflow", "forecast", "express", "dividend", "fina_indicator", "fina_audit", "fina_mainbz", "disclosure_date"}
     etf_datasets = {"fund_nav", "fund_share", "fund_div"}
     us_datasets = {"us_basic", "us_tradecal", "us_daily"}
-    market_datasets = [d for d in selected if d not in basic_datasets and d not in macro_datasets and d not in finance_datasets and d not in etf_datasets and d not in us_datasets]
+    us_index_datasets = set(get_us_index_names())
+    market_datasets = [d for d in selected if d not in basic_datasets and d not in macro_datasets and d not in finance_datasets and d not in etf_datasets and d not in us_datasets and d not in us_index_datasets]
 
     # Basic refresh (cheap snapshots).
     run_basic(cfg, token=token, catalog=cat, datasets=[d for d in selected if d in basic_datasets], start_date=None, end_date=end_date)
@@ -175,6 +194,20 @@ def update(cfg: RunConfig, *, token: str, end_date: str, datasets: str) -> None:
         start_date=None,
         end_date=end_date,
     )
+
+    # US indices (derived from us_daily).
+    selected_us_indices = [d for d in selected if d in us_index_datasets]
+    # Auto-calculate all US indices if us_daily was selected (even if indices weren't explicitly selected)
+    if "us_daily" in selected and not selected_us_indices:
+        selected_us_indices = list(us_index_datasets)
+    if selected_us_indices:
+        run_us_index(
+            cfg,
+            catalog=cat,
+            indices=selected_us_indices,
+            start_date=None,
+            end_date=end_date,
+        )
 
     ensure_derived_views(cat)
     cat.export_ingestion_state_snapshot()

@@ -49,6 +49,12 @@ def register_parquet_views(
         "etf_daily",
         # US stock daily bars.
         "us_daily",
+        # US stock indices (derived/calculated).
+        "us_index_broad",
+        "us_index_nasdaq",
+        "us_index_sp500",
+        "us_index_ndx100",
+        "us_index_djia30",
     ]
 
     # Finance datasets (report-period partitioned)

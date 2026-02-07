@@ -159,6 +159,15 @@ class StockStore:
         "fund_div",
     }
 
+    # US index datasets (derived/calculated from us_daily).
+    _US_INDEX_DATASETS: set[str] = {
+        "us_index_broad",
+        "us_index_nasdaq",
+        "us_index_sp500",
+        "us_index_ndx100",
+        "us_index_djia30",
+    }
+
     def __init__(
         self,
         *,
@@ -1045,6 +1054,79 @@ class StockStore:
         )
 
     # -----------------------------
+    # Public API: US Index (derived)
+    # -----------------------------
+    def us_index(
+        self,
+        index_name: str,
+        *,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        columns: list[str] | None = None,
+        cache: bool = True,
+    ) -> pd.DataFrame:
+        """Get US stock index data (calculated from us_daily).
+        
+        Available indices:
+        - us_index_broad: Broad market (Wilshire 5000-like, equal-weighted)
+        - us_index_nasdaq: NASDAQ Composite-like (equal-weighted)
+        - us_index_sp500: S&P 500-like (top 500 by volume, vol-weighted)
+        - us_index_ndx100: NASDAQ-100-like (top 100 NASDAQ, capped at 14%)
+        - us_index_djia30: DJIA-like (top 30, price-weighted)
+        
+        These are research-grade approximations, not licensed replicas.
+        Daily return correlation to actual indices: ~0.90-0.98.
+        
+        Args:
+            index_name: Name of the index (e.g., "us_index_sp500").
+            start_date: Filter from this date (YYYYMMDD).
+            end_date: Filter up to this date (YYYYMMDD).
+            columns: Columns to return. Available: trade_date, index_name, index_value, daily_return, num_constituents, divisor.
+        """
+        if index_name not in self._US_INDEX_DATASETS:
+            raise ValueError(f"Unknown US index: {index_name}. Available: {sorted(self._US_INDEX_DATASETS)}")
+        
+        return self._read_trade_date_dataset_simple(
+            index_name,
+            start_date=start_date,
+            end_date=end_date,
+            columns=columns,
+            cache=cache,
+        )
+
+    def us_indices(
+        self,
+        *,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        cache: bool = True,
+    ) -> pd.DataFrame:
+        """Get all US stock indices in a single DataFrame.
+        
+        Returns wide-format DataFrame with columns:
+        trade_date, us_index_broad, us_index_nasdaq, us_index_sp500, us_index_ndx100, us_index_djia30
+        """
+        dfs = []
+        for idx in sorted(self._US_INDEX_DATASETS):
+            try:
+                df = self.us_index(idx, start_date=start_date, end_date=end_date, columns=["trade_date", "index_value"], cache=cache)
+                if not df.empty:
+                    df = df.rename(columns={"index_value": idx})
+                    dfs.append(df)
+            except Exception:
+                continue
+        
+        if not dfs:
+            return pd.DataFrame(columns=["trade_date"])
+        
+        # Merge all indices on trade_date
+        result = dfs[0]
+        for df in dfs[1:]:
+            result = result.merge(df, on="trade_date", how="outer")
+        
+        return result.sort_values("trade_date").reset_index(drop=True)
+
+    # -----------------------------
     # Escape hatches
     # -----------------------------
     def sql(self, query: str, params: list[Any] | None = None) -> pd.DataFrame:
@@ -1391,6 +1473,52 @@ class StockStore:
             p.append(str(end_date))
         if order_by:
             sql += f" ORDER BY {_quote_ident(order_by)}"
+
+        con = self._connect()
+        df = con.execute(sql, p).fetchdf()
+
+        if cache and self._cache_enabled:
+            self._cache.set(cache_key, df.copy(), size_bytes=_estimate_df_bytes(df))
+        return df
+
+    def _read_trade_date_dataset_simple(
+        self,
+        dataset: str,
+        *,
+        start_date: str | None,
+        end_date: str | None,
+        columns: list[str] | None,
+        cache: bool,
+    ) -> pd.DataFrame:
+        """Read trade_date partitioned dataset without ts_code filter (e.g., US indices)."""
+        cache_key = self._cache_key(
+            f"ds:{dataset}",
+            start_date=start_date,
+            end_date=end_date,
+            columns=columns,
+        )
+        if cache and self._cache_enabled:
+            hit = self._cache.get(cache_key)
+            if hit is not None:
+                return hit.copy()
+
+        expr, params = self._dataset_relation_expr(dataset, start_date=start_date, end_date=end_date, exchange=None)
+        sql_cols = "*" if not columns else ", ".join(_quote_ident(c) for c in columns)
+        sql = f"SELECT {sql_cols} FROM {expr}"
+        p = list(params)
+        
+        where_clauses = []
+        if start_date is not None:
+            where_clauses.append("trade_date >= ?")
+            p.append(str(start_date))
+        if end_date is not None:
+            where_clauses.append("trade_date <= ?")
+            p.append(str(end_date))
+        
+        if where_clauses:
+            sql += " WHERE " + " AND ".join(where_clauses)
+        
+        sql += " ORDER BY trade_date"
 
         con = self._connect()
         df = con.execute(sql, p).fetchdf()
