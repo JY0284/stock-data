@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import os
+import re
 import threading
 import time
 from collections import OrderedDict
@@ -11,6 +12,60 @@ from typing import Any, Iterable, Literal
 import pandas as pd
 
 from stock_data.utils_dates import parse_yyyymmdd
+
+
+_YYYYMMDD_RE = re.compile(r"^\d{8}$")
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_SLASH_DATE_RE = re.compile(r"^\d{4}/\d{2}/\d{2}$")
+
+
+def _coerce_yyyymmdd(v: Any, *, param_name: str) -> str | None:
+    """Coerce a date-like value into YYYYMMDD.
+
+    Accepts:
+    - YYYYMMDD (string or int)
+    - ISO date: YYYY-MM-DD
+    - Slash date: YYYY/MM/DD
+    - datetime/date objects
+
+    Returns None if v is None.
+    Raises ValueError for unsupported formats.
+    """
+    if v is None:
+        return None
+    if isinstance(v, _dt.datetime):
+        return v.strftime("%Y%m%d")
+    if isinstance(v, _dt.date):
+        return v.strftime("%Y%m%d")
+
+    s = str(v).strip()
+    if not s:
+        raise ValueError(f"{param_name} must be a non-empty date in YYYYMMDD (e.g. 20260207)")
+
+    if _YYYYMMDD_RE.match(s):
+        return s
+    if _ISO_DATE_RE.match(s):
+        return s.replace("-", "")
+    if _SLASH_DATE_RE.match(s):
+        return s.replace("/", "")
+
+    raise ValueError(
+        f"{param_name} must be YYYYMMDD (e.g. 20260207) or ISO YYYY-MM-DD; got {v!r}"
+    )
+
+
+def _coerce_yyyymmdd_range(
+    start: Any,
+    end: Any,
+    *,
+    start_name: str = "start_date",
+    end_name: str = "end_date",
+) -> tuple[str | None, str | None]:
+    s = _coerce_yyyymmdd(start, param_name=start_name) if start is not None else None
+    e = _coerce_yyyymmdd(end, param_name=end_name) if end is not None else None
+    if s is not None and e is not None and s > e:
+        raise ValueError(f"{start_name} must be <= {end_name} (got {s} > {e})")
+    return s, e
 
 How = Literal["qfq", "hfq", "both"]
 
@@ -344,6 +399,7 @@ class StockStore:
         return df
 
     def trading_days(self, start_date: str, end_date: str, *, exchange: str | None = None) -> list[str]:
+        start_date, end_date = _coerce_yyyymmdd_range(start_date, end_date)
         ex = (exchange or self.exchange_default).strip()
         key = (ex, start_date, end_date)
         cached = self._trading_days.get(key)
@@ -361,6 +417,7 @@ class StockStore:
         return out
 
     def is_trading_day(self, date: str, *, exchange: str | None = None) -> bool:
+        date = _coerce_yyyymmdd(date, param_name="date") or str(date)
         ex = (exchange or self.exchange_default).strip()
         cal = self.trade_cal(exchange=ex, cache=True)
         d = str(date)
@@ -368,6 +425,7 @@ class StockStore:
         return bool(len(hit) > 0 and int(hit.iloc[0]) == 1)
 
     def prev_trade_date(self, date: str, *, exchange: str | None = None) -> str | None:
+        date = _coerce_yyyymmdd(date, param_name="date") or str(date)
         ex = (exchange or self.exchange_default).strip()
         cal = self.trade_cal(exchange=ex, cache=True)
         d = str(date)
@@ -378,6 +436,7 @@ class StockStore:
         return str(v) if pd.notna(v) and str(v).strip() else None
 
     def next_trade_date(self, date: str, *, exchange: str | None = None) -> str | None:
+        date = _coerce_yyyymmdd(date, param_name="date") or str(date)
         ex = (exchange or self.exchange_default).strip()
         # next_trade_date isn't stored; compute from open days.
         cal = self.trade_cal(exchange=ex, cache=True)
@@ -401,6 +460,8 @@ class StockStore:
         cache: bool = True,
         limit: int | None = None,
     ) -> pd.DataFrame:
+        start_date = _coerce_yyyymmdd(start_date, param_name="start_date") if start_date is not None else None
+        end_date = _coerce_yyyymmdd(end_date, param_name="end_date") if end_date is not None else None
         df = self._read_year_window_dataset("new_share", year=year, cache=cache)
         if start_date is not None:
             df = df.loc[df["ipo_date"].astype(str) >= str(start_date)]
@@ -423,6 +484,8 @@ class StockStore:
         end_date: str | None = None,
         cache: bool = True,
     ) -> pd.DataFrame:
+        start_date = _coerce_yyyymmdd(start_date, param_name="start_date") if start_date is not None else None
+        end_date = _coerce_yyyymmdd(end_date, param_name="end_date") if end_date is not None else None
         df = self._read_year_window_dataset("namechange", year=None, cache=cache)
         df = df.loc[df["ts_code"] == ts_code]
         if start_date is not None:
@@ -490,6 +553,31 @@ class StockStore:
     ) -> pd.DataFrame:
         return self._read_trade_date_dataset(
             "daily_basic",
+            ts_code=ts_code,
+            start_date=start_date,
+            end_date=end_date,
+            columns=columns,
+            order_by="trade_date",
+            exchange=exchange,
+            cache=cache,
+        )
+
+    def etf_daily(
+        self,
+        ts_code: str,
+        *,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        columns: list[str] | None = None,
+        exchange: str | None = None,
+        cache: bool = True,
+    ) -> pd.DataFrame:
+        """Get ETF daily bars for a given ETF ts_code.
+
+        Data is stored as trade_date partitions under parquet/etf_daily/.
+        """
+        return self._read_trade_date_dataset(
+            "etf_daily",
             ts_code=ts_code,
             start_date=start_date,
             end_date=end_date,
@@ -593,6 +681,7 @@ class StockStore:
         exchange: str | None = None,
         cache: bool = True,
     ) -> pd.DataFrame:
+        start_date, end_date = _coerce_yyyymmdd_range(start_date, end_date)
         how = how.lower().strip()  # type: ignore[assignment]
         if how not in {"qfq", "hfq", "both"}:
             raise ValueError("how must be one of: qfq, hfq, both")
@@ -1007,6 +1096,8 @@ class StockStore:
         is_open: int | None = None,
         cache: bool = True,
     ) -> pd.DataFrame:
+        start_date = _coerce_yyyymmdd(start_date, param_name="start_date") if start_date is not None else None
+        end_date = _coerce_yyyymmdd(end_date, param_name="end_date") if end_date is not None else None
         """Get US trading calendar (美股交易日历).
         
         Args:
@@ -1154,6 +1245,12 @@ class StockStore:
         if not ds:
             raise ValueError("dataset is required")
 
+        # Normalize common date inputs early so:
+        # - cache keys are stable
+        # - ISO dates like "2026-02-07" don't silently produce empty results
+        if ds in self._TRADE_DATE_DATASETS or ds in self._END_DATE_DATASETS or ds in self._TS_CODE_DATASETS:
+            start_date, end_date = _coerce_yyyymmdd_range(start_date, end_date)
+
         cache_key = self._cache_key(
             f"read:{ds}",
             where=where,
@@ -1264,6 +1361,7 @@ class StockStore:
             con = self._connect()
             df = con.execute(sql, p).fetchdf()
         elif ds in self._END_DATE_DATASETS:
+            start_date, end_date = _coerce_yyyymmdd_range(start_date, end_date)
             glob_path = os.path.join(self.parquet_dir, ds, "**", "[!.]*.parquet")
             expr = "read_parquet(?, union_by_name=true)"
             params = [glob_path]
@@ -1418,7 +1516,7 @@ class StockStore:
         if dataset not in self._TRADE_DATE_DATASETS:
             raise ValueError(f"Not a trade-date dataset: {dataset}")
 
-        # If no date range is provided, fall back to glob (can be large).
+        start_date, end_date = _coerce_yyyymmdd_range(start_date, end_date)
         if not start_date or not end_date:
             glob_path = os.path.join(self.parquet_dir, dataset, "**", "[!.]*.parquet")
             return "read_parquet(?, union_by_name=true)", [glob_path]
@@ -1451,6 +1549,7 @@ class StockStore:
         exchange: str | None,
         cache: bool,
     ) -> pd.DataFrame:
+        start_date, end_date = _coerce_yyyymmdd_range(start_date, end_date)
         cache_key = self._cache_key(
             f"ds:{dataset}",
             ts_code=ts_code,
@@ -1495,6 +1594,7 @@ class StockStore:
         cache: bool,
     ) -> pd.DataFrame:
         """Read trade_date partitioned dataset without ts_code filter (e.g., US indices)."""
+        start_date, end_date = _coerce_yyyymmdd_range(start_date, end_date)
         cache_key = self._cache_key(
             f"ds:{dataset}",
             start_date=start_date,
@@ -1543,6 +1643,12 @@ class StockStore:
         cache: bool,
     ) -> pd.DataFrame:
         """Read finance dataset partitioned by end_date (report period)."""
+        start_period, end_period = _coerce_yyyymmdd_range(
+            start_period,
+            end_period,
+            start_name="start_period",
+            end_name="end_period",
+        )
         cache_key = self._cache_key(
             f"ds:{dataset}",
             ts_code=ts_code,
@@ -1637,6 +1743,7 @@ class StockStore:
         
         Each file is: <dataset>/ts_code=XXXXXX_XX.parquet
         """
+        start_date, end_date = _coerce_yyyymmdd_range(start_date, end_date)
         cache_key = self._cache_key(
             f"ds:{dataset}",
             ts_code=ts_code,
