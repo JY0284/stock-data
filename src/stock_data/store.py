@@ -671,6 +671,60 @@ class StockStore:
             cache=cache,
         )
 
+    def moneyflow(
+        self,
+        ts_code: str,
+        *,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        columns: list[str] | None = None,
+        exchange: str | None = None,
+        cache: bool = True,
+    ) -> pd.DataFrame:
+        """Get A-share money flow for a stock.
+
+        Local dataset: `moneyflow` (trade_date-partitioned parquet).
+        Date format: YYYYMMDD (also accepts ISO YYYY-MM-DD).
+        """
+        return self._read_trade_date_dataset(
+            "moneyflow",
+            ts_code=ts_code,
+            start_date=start_date,
+            end_date=end_date,
+            columns=columns,
+            order_by="trade_date",
+            exchange=exchange,
+            cache=cache,
+        )
+
+    def fx_daily(
+        self,
+        ts_code: str,
+        *,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        columns: list[str] | None = None,
+        cache: bool = True,
+    ) -> pd.DataFrame:
+        """Get FX daily quotes for a currency pair.
+
+        Local dataset: `fx_daily` (trade_date-partitioned parquet in this repo).
+        Date format: YYYYMMDD (also accepts ISO YYYY-MM-DD).
+
+        Note: FX is not tied to the SSE/SZSE trading calendar, so we avoid
+        exchange-based calendar pruning for correctness.
+        """
+        return self._read_trade_date_dataset(
+            "fx_daily",
+            ts_code=ts_code,
+            start_date=start_date,
+            end_date=end_date,
+            columns=columns,
+            order_by="trade_date",
+            exchange=None,
+            cache=cache,
+        )
+
     def daily_adj(
         self,
         ts_code: str,
@@ -1354,6 +1408,12 @@ class StockStore:
                 w_sql, w_params = _where_sql(where)
                 sql += f" WHERE {w_sql}"
                 p.extend(w_params)
+            if start_date is not None:
+                sql += f" {'WHERE' if not where else 'AND'} trade_date >= ?"
+                p.append(str(start_date))
+            if end_date is not None:
+                sql += f" {'WHERE' if not where and start_date is None else 'AND'} trade_date <= ?"
+                p.append(str(end_date))
             if order_by:
                 sql += f" ORDER BY {_parse_order_by(order_by)}"
             if limit is not None:
@@ -1518,6 +1578,13 @@ class StockStore:
 
         start_date, end_date = _coerce_yyyymmdd_range(start_date, end_date)
         if not start_date or not end_date:
+            glob_path = os.path.join(self.parquet_dir, dataset, "**", "[!.]*.parquet")
+            return "read_parquet(?, union_by_name=true)", [glob_path]
+
+        # Some trade_date-partitioned datasets aren't tied to the SSE/SZSE trade calendar
+        # (e.g., FX quotes, US daily bars). Calendar pruning with the wrong exchange can
+        # silently drop valid partitions, so prefer glob + SQL filtering for correctness.
+        if dataset in {"fx_daily", "us_daily"}:
             glob_path = os.path.join(self.parquet_dir, dataset, "**", "[!.]*.parquet")
             return "read_parquet(?, union_by_name=true)", [glob_path]
 

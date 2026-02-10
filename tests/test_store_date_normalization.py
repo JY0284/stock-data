@@ -133,3 +133,71 @@ def test_invalid_date_format_raises(tmp_path: Path) -> None:
             assert "YYYYMMDD" in str(e)
     finally:
         store.close()
+
+
+def test_fx_daily_not_pruned_by_sse_trade_cal(tmp_path: Path) -> None:
+    store_dir = tmp_path / "store"
+    parquet_dir = store_dir / "parquet"
+
+    _write_parquet(
+        parquet_dir / "stock_basic" / "latest.parquet",
+        pd.DataFrame(
+            [
+                {
+                    "ts_code": "000001.SZ",
+                    "symbol": "000001",
+                    "name": "Ping An Bank",
+                    "list_date": "19910403",
+                    "list_status": "L",
+                    "exchange": "SZSE",
+                }
+            ]
+        ),
+    )
+
+    # Deliberately incomplete SSE trade calendar (missing 20260208).
+    _write_parquet(
+        parquet_dir / "trade_cal" / "SSE_latest.parquet",
+        pd.DataFrame(
+            [
+                {"exchange": "SSE", "cal_date": "20260207", "is_open": 1, "pretrade_date": "20260206"},
+                {"exchange": "SSE", "cal_date": "20260210", "is_open": 1, "pretrade_date": "20260207"},
+            ]
+        ),
+    )
+
+    # FX data exists for 20260208, which SSE calendar would omit.
+    _write_parquet(
+        parquet_dir / "fx_daily" / "year=2026" / "month=02" / "trade_date=20260207.parquet",
+        pd.DataFrame(
+            [
+                {
+                    "ts_code": "USDJPY.FXCM",
+                    "trade_date": "20260207",
+                    "bid_open": 100.0,
+                    "bid_close": 101.0,
+                }
+            ]
+        ),
+    )
+    _write_parquet(
+        parquet_dir / "fx_daily" / "year=2026" / "month=02" / "trade_date=20260208.parquet",
+        pd.DataFrame(
+            [
+                {
+                    "ts_code": "USDJPY.FXCM",
+                    "trade_date": "20260208",
+                    "bid_open": 101.0,
+                    "bid_close": 102.0,
+                }
+            ]
+        ),
+    )
+
+    store = open_store(str(store_dir))
+    try:
+        df = store.fx_daily("USDJPY.FXCM", start_date="20260207", end_date="20260208")
+    finally:
+        store.close()
+
+    assert df["trade_date"].astype(str).tolist() == ["20260207", "20260208"]
