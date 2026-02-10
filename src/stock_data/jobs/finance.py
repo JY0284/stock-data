@@ -256,7 +256,7 @@ def run_finance(
         catalog.set_state(dataset="disclosure_date", partition_key=key, status="running")
         try:
             logger.info("finance: fetching disclosure_date snapshot")
-            df = client.query("disclosure_date", end_date=end_date)
+            df = client.query_all("disclosure_date", end_date=end_date)
             if df is None:
                 df = pd.DataFrame()
             w.write_snapshot("disclosure_date", df, name="latest")
@@ -359,7 +359,7 @@ def run_finance(
                 raise ValueError(f"Unknown finance dataset: {dataset}")
             
             # Call the API with period parameter
-            df = client.query(api_name, period=period)
+            df = client.query_all(api_name, period=period)
             
             if df is None:
                 df = pd.DataFrame()

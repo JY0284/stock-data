@@ -46,7 +46,7 @@ def _effective_end_date(client: TushareClient, end_date: str) -> str:
     compare local max dates against a realistic market calendar.
     """
     cal_start = _add_days_yyyymmdd(end_date, -90)
-    df = client.query("trade_cal", exchange="SSE", start_date=cal_start, end_date=end_date, is_open="1")
+    df = client.query_all("trade_cal", exchange="SSE", start_date=cal_start, end_date=end_date, is_open="1")
     if df is None or getattr(df, "empty", False):
         return end_date
     try:

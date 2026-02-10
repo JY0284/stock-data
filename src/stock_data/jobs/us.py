@@ -49,7 +49,7 @@ def _add_days_yyyymmdd(s: str, days: int) -> str:
 
 def _fetch_us_open_trade_dates(client: TushareClient, start_date: str, end_date: str) -> list[str]:
     """Fetch US open trading dates using us_tradecal API."""
-    df = client.query("us_tradecal", start_date=start_date, end_date=end_date, is_open="1")
+    df = client.query_all("us_tradecal", start_date=start_date, end_date=end_date, is_open="1")
     if df is None or df.empty:
         return []
     out = df["cal_date"].astype(str).tolist()
@@ -84,21 +84,11 @@ def run_us(
         key = f"asof={end_date}"
         catalog.set_state(dataset="us_basic", partition_key=key, status="running")
         try:
-            parts = []
-            offset = 0
-            limit = 6000
-            while True:
-                df_part = client.query("us_basic", offset=str(offset), limit=str(limit))
-                if df_part is None or df_part.empty:
-                    break
-                parts.append(df_part)
-                if len(df_part) < limit:
-                    break
-                offset += limit
-            if parts:
-                df = pd.concat(parts, ignore_index=True).drop_duplicates(subset=["ts_code"], keep="first")
-            else:
+            df = client.query_all("us_basic", page_size=6000)
+            if df is None:
                 df = pd.DataFrame()
+            if not df.empty and "ts_code" in df.columns:
+                df = df.drop_duplicates(subset=["ts_code"], keep="first")
             w.write_snapshot("us_basic", df, name="latest")
             catalog.set_state(dataset="us_basic", partition_key=key, status="completed", row_count=int(len(df)))
             logger.info("us: us_basic completed rows=%d", len(df))
@@ -112,7 +102,7 @@ def run_us(
         catalog.set_state(dataset="us_tradecal", partition_key=key, status="running")
         try:
             # Fetch full calendar from 1990 to end_date
-            df = client.query("us_tradecal", start_date="19900101", end_date=end_date)
+            df = client.query_all("us_tradecal", start_date="19900101", end_date=end_date)
             if df is None:
                 df = pd.DataFrame()
             w.write_snapshot("us_tradecal", df, name="latest")
@@ -200,7 +190,7 @@ def _run_us_daily(
             running.add(trade_date)
         try:
             logger.debug("us: fetch start us_daily trade_date=%s", trade_date)
-            df = client.query("us_daily", trade_date=trade_date)
+            df = client.query_all("us_daily", trade_date=trade_date)
             if df is None:
                 df = pd.DataFrame()
 

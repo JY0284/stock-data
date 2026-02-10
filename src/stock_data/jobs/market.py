@@ -5,6 +5,7 @@ import datetime as _dt
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import glob
 import logging
+import os
 import threading
 import time
 
@@ -41,8 +42,34 @@ def _writer(cfg: RunConfig) -> ParquetWriter:
     return ParquetWriter(cfg.parquet_dir)
 
 
+def _earliest_etf_list_date(parquet_root: str) -> str:
+    """Best-effort: determine the earliest ETF list_date from fund_basic.
+
+    We use this to avoid scheduling `etf_daily` partitions before ETFs exist.
+    """
+    fallback = "20040101"
+    path = os.path.join(parquet_root, "fund_basic", "latest.parquet")
+    if not os.path.exists(path):
+        return fallback
+
+    try:
+        import pandas as pd
+
+        df = pd.read_parquet(path)
+        if df is None or df.empty or "list_date" not in df.columns:
+            return fallback
+        s = df["list_date"].dropna().astype(str)
+        s = s[s.str.len() == 8]
+        if s.empty:
+            return fallback
+        return str(s.min())
+    except Exception:
+        # Keep market job resilient; use fallback instead of failing ingestion.
+        return fallback
+
+
 def _fetch_open_trade_dates(client: TushareClient, start_date: str, end_date: str) -> list[str]:
-    df = client.query("trade_cal", exchange="SSE", start_date=start_date, end_date=end_date, is_open="1")
+    df = client.query_all("trade_cal", exchange="SSE", start_date=start_date, end_date=end_date, is_open="1")
     if df is None or df.empty:
         return []
     # Ensure str type
@@ -256,10 +283,10 @@ def _run_index_daily(
                 existing_max = None
 
             if existing_max:
-                df = client.query("index_daily", ts_code=ts_code, start_date=str(existing_max), end_date=str(effective_end))
+                df = client.query_all("index_daily", ts_code=ts_code, start_date=str(existing_max), end_date=str(effective_end))
             else:
                 # Query all history for this index (first-time ingestion)
-                df = client.query("index_daily", ts_code=ts_code)
+                df = client.query_all("index_daily", ts_code=ts_code)
             
             if df is None:
                 df = pd.DataFrame()
@@ -467,7 +494,7 @@ def _run_fx_daily(
             running.add(trade_date)
         try:
             try:
-                df = client.query("fx_daily", trade_date=trade_date, exchange=exchange)
+                df = client.query_all("fx_daily", trade_date=trade_date, exchange=exchange)
             except Exception as e:  # noqa: BLE001
                 msg = str(e).lower()
                 needs_ts_code = ("ts_code" in msg) and ("required" in msg or "missing" in msg)
@@ -581,6 +608,8 @@ def run_market(
     client = TushareClient(token=token, limiter=limiter)
     w = _writer(cfg)
 
+    etf_start_floor = _earliest_etf_list_date(cfg.parquet_dir)
+
     # Handle index_daily separately (ts_code-based)
     if "index_daily" in datasets:
         _run_index_daily(cfg, client, catalog, w, end_date=end_date, refresh_days=index_daily_refresh_days)
@@ -638,7 +667,8 @@ def run_market(
         # blocking future updates.
         if ds in must_nonempty:
             return 1
-        if start_date is None and ds == "etf_daily":
+        if ds == "etf_daily":
+            # `fund_daily` should be non-empty on/after ETFs exist; treat empty partitions as incomplete.
             return 1
         return None
 
@@ -657,13 +687,18 @@ def run_market(
                 if start_idx >= len(open_dates):
                     start_idx = max(0, len(open_dates) - 1)
                 candidates = open_dates[start_idx:]
+            if ds == "etf_daily":
+                candidates = [d for d in candidates if d >= etf_start_floor]
             date_map[ds] = [d for d in candidates if d not in completed]
     else:
         for ds in datasets:
             if ds in dailyish:
                 min_rows = _min_row_count_for(ds)
                 completed = catalog.completed_partitions(ds, min_row_count=min_rows)
-                date_map[ds] = [d for d in open_dates if start_date <= d <= effective_end and d not in completed]
+                ds_start = start_date
+                if ds == "etf_daily":
+                    ds_start = max(ds_start, etf_start_floor)
+                date_map[ds] = [d for d in open_dates if ds_start <= d <= effective_end and d not in completed]
 
     # Weekly/monthly are only needed at week/month ends.
     if "weekly" in datasets:
@@ -758,28 +793,32 @@ def run_market(
         try:
             logger.debug("market: fetch start dataset=%s trade_date=%s", dataset, trade_date)
             if dataset == "daily":
-                df = client.query("daily", trade_date=trade_date)
+                df = client.query_all("daily", trade_date=trade_date)
             elif dataset == "adj_factor":
-                df = client.query("adj_factor", trade_date=trade_date)
+                df = client.query_all("adj_factor", trade_date=trade_date)
             elif dataset == "daily_basic":
-                df = client.query("daily_basic", trade_date=trade_date)
+                df = client.query_all("daily_basic", trade_date=trade_date)
             elif dataset == "stk_limit":
-                df = client.query("stk_limit", trade_date=trade_date)
+                df = client.query_all("stk_limit", trade_date=trade_date)
             elif dataset == "suspend_d":
-                df_s = client.query("suspend_d", suspend_type="S", trade_date=trade_date)
-                df_r = client.query("suspend_d", suspend_type="R", trade_date=trade_date)
+                df_s = client.query_all("suspend_d", suspend_type="S", trade_date=trade_date)
+                df_r = client.query_all("suspend_d", suspend_type="R", trade_date=trade_date)
                 df = pd.concat([df_s, df_r], ignore_index=True)
             elif dataset == "moneyflow":
-                df = client.query("moneyflow", trade_date=trade_date)
+                df = client.query_all("moneyflow", trade_date=trade_date)
             # index_daily is not supported - requires ts_code parameter, cannot query by trade_date alone
             elif dataset == "etf_daily":
                 # Tushare does not provide a separate "etf_daily" endpoint in `pro.query`.
                 # The commonly used daily bars endpoint for exchange-traded funds is `fund_daily`.
-                df = client.query("fund_daily", trade_date=trade_date)
+                page_size = int(os.environ.get("STOCK_DATA_FUND_DAILY_PAGE_SIZE", "5000"))
+                if page_size <= 0:
+                    page_size = 5000
+
+                df = client.query_all("fund_daily", trade_date=trade_date, page_size=page_size)
             elif dataset == "weekly":
-                df = client.query("weekly", trade_date=trade_date)
+                df = client.query_all("weekly", trade_date=trade_date)
             elif dataset == "monthly":
-                df = client.query("monthly", trade_date=trade_date)
+                df = client.query_all("monthly", trade_date=trade_date)
             else:
                 raise ValueError(f"Unknown dataset: {dataset}")
 
@@ -801,6 +840,19 @@ def run_market(
                     error="empty response for today; likely not published yet",
                 )
                 logger.info("market: skipped empty today dataset=%s trade_date=%s", dataset, trade_date)
+                return 0
+
+            # `etf_daily` empty response for historical dates is almost always a throttling/partial failure.
+            # Mark as skipped (not completed) so future runs will retry; do not write empty parquet.
+            if dataset == "etf_daily" and (getattr(df, "empty", False) or len(getattr(df, "columns", [])) == 0):
+                catalog.set_state(
+                    dataset=dataset,
+                    partition_key=key,
+                    status="skipped",
+                    row_count=0,
+                    error="empty response for fund_daily; will retry in a later run",
+                )
+                logger.info("market: skipped empty dataset=%s trade_date=%s", dataset, trade_date)
                 return 0
 
             w.write_trade_date_partition(dataset, trade_date, df)

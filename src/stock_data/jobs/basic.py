@@ -38,20 +38,20 @@ def run_basic(
         key = f"asof={end_date}"
         catalog.set_state(dataset="stock_basic", partition_key=key, status="running")
         try:
-            df = client.query(
+            df = client.query_all(
                 "stock_basic",
                 exchange="",
                 list_status="L",
                 fields="ts_code,symbol,name,area,industry,fullname,enname,cnspell,market,exchange,curr_type,list_status,list_date,delist_date,is_hs,act_name,act_ent_type",
             )
             # also include delisted/paused for completeness
-            df_d = client.query(
+            df_d = client.query_all(
                 "stock_basic",
                 exchange="",
                 list_status="D",
                 fields="ts_code,symbol,name,area,industry,fullname,enname,cnspell,market,exchange,curr_type,list_status,list_date,delist_date,is_hs,act_name,act_ent_type",
             )
-            df_p = client.query(
+            df_p = client.query_all(
                 "stock_basic",
                 exchange="",
                 list_status="P",
@@ -69,7 +69,7 @@ def run_basic(
         key = f"SSE:{end_date}"
         catalog.set_state(dataset="trade_cal", partition_key=key, status="running")
         try:
-            df = client.query("trade_cal", exchange="SSE", start_date="19900101", end_date=end_date, is_open="")
+            df = client.query_all("trade_cal", exchange="SSE", start_date="19900101", end_date=end_date, is_open="")
             w.write_snapshot("trade_cal", df, name="SSE_latest")
             catalog.set_state(dataset="trade_cal", partition_key=key, status="completed", row_count=int(len(df)))
         except Exception as e:  # noqa: BLE001
@@ -84,7 +84,7 @@ def run_basic(
             parts = []
             for ex in ["SSE", "SZSE", "BSE"]:
                 parts.append(
-                    client.query(
+                    client.query_all(
                         "stock_company",
                         exchange=ex,
                         fields="ts_code,com_name,com_id,exchange,chairman,manager,secretary,reg_capital,setup_date,province,city,introduction,website,email,office,employees,main_business,business_scope",
@@ -105,7 +105,7 @@ def run_basic(
             parts = []
             # Fetch from all major markets
             for market in ["SSE", "SZSE", "CSI", "SW", "MSCI", "OTH"]:
-                df_part = client.query(
+                df_part = client.query_all(
                     "index_basic",
                     market=market,
                     fields="ts_code,name,fullname,market,publisher,index_type,category,base_date,base_point,list_date,weight_rule,desc,exp_date",
@@ -128,7 +128,7 @@ def run_basic(
         catalog.set_state(dataset="fund_basic", partition_key=key, status="running")
         try:
             # Fetch ETFs (market='E')
-            df = client.query(
+            df = client.query_all(
                 "fund_basic",
                 market="E",
             )
@@ -157,7 +157,7 @@ def run_basic(
                     continue
             catalog.set_state(dataset="new_share", partition_key=key, status="running")
             try:
-                df = client.query("new_share", start_date=ws, end_date=we)
+                df = client.query_all("new_share", start_date=ws, end_date=we)
                 w.write_snapshot("new_share", df, name=f"year={year}")
                 catalog.set_state(dataset="new_share", partition_key=key, status="completed", row_count=int(len(df)))
             except Exception as e:  # noqa: BLE001
@@ -179,7 +179,7 @@ def run_basic(
                     continue
             catalog.set_state(dataset="namechange", partition_key=key, status="running")
             try:
-                df = client.query("namechange", start_date=ws, end_date=we)
+                df = client.query_all("namechange", start_date=ws, end_date=we)
                 w.write_snapshot("namechange", df, name=f"year={year}")
                 catalog.set_state(dataset="namechange", partition_key=key, status="completed", row_count=int(len(df)))
             except Exception as e:  # noqa: BLE001

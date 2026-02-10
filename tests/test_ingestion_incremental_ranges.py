@@ -49,6 +49,9 @@ def test_macro_update_uses_incremental_start_and_merges(tmp_path: Path, monkeypa
                 )
             return pd.DataFrame()
 
+        def query_all(self, api_name: str, **params):
+            return self.query(api_name, **params)
+
     import stock_data.jobs.macro as macro_mod
 
     monkeypatch.setattr(macro_mod, "TushareClient", FakeTushareClient)
@@ -114,6 +117,9 @@ def test_etf_fund_nav_update_uses_start_end_date(tmp_path: Path, monkeypatch) ->
                     ]
                 )
             return pd.DataFrame()
+
+        def query_all(self, api_name: str, **params):
+            return self.query(api_name, **params)
 
     import stock_data.jobs.etf as etf_mod
 
@@ -259,6 +265,9 @@ def test_index_daily_update_uses_start_end_date(tmp_path: Path, monkeypatch) -> 
                 )
             return pd.DataFrame()
 
+        def query_all(self, api_name: str, **params):
+            return self.query(api_name, **params)
+
     import stock_data.jobs.market as market_mod
 
     monkeypatch.setattr(market_mod, "TushareClient", FakeTushareClient)
@@ -331,6 +340,9 @@ def test_index_daily_schedules_only_lagging_codes(tmp_path: Path, monkeypatch) -
                 return pd.DataFrame([{ "ts_code": code, "trade_date": "20250131", "close": 2.0 }])
             return pd.DataFrame()
 
+        def query_all(self, api_name: str, **params):
+            return self.query(api_name, **params)
+
     import stock_data.jobs.market as market_mod
 
     monkeypatch.setattr(market_mod, "TushareClient", FakeTushareClient)
@@ -353,6 +365,92 @@ def test_index_daily_schedules_only_lagging_codes(tmp_path: Path, monkeypatch) -
     index_calls = [p for (api, p) in calls if api == "index_daily"]
     assert len(index_calls) == 1
     assert index_calls[0].get("ts_code") == "000002.SH"
+
+
+def test_etf_daily_fund_daily_is_paginated_and_combined(tmp_path: Path, monkeypatch) -> None:
+    store_dir = tmp_path / "store"
+    cfg = RunConfig(store_dir=str(store_dir), rpm=1, workers=1)
+
+    # Ensure fund_basic exists so market job can compute an ETF start floor.
+    fund_basic = pd.DataFrame(
+        [
+            {"ts_code": "513100.SH", "name": "test", "list_date": "20130101"},
+        ]
+    )
+    _write_parquet(store_dir / "parquet" / "fund_basic" / "latest.parquet", fund_basic)
+
+    # Force tiny page size to exercise pagination.
+    monkeypatch.setenv("STOCK_DATA_FUND_DAILY_PAGE_SIZE", "2")
+
+    class FakeTushareClient:
+        last_instance: "FakeTushareClient | None" = None
+
+        def __init__(self, *args, **kwargs):
+            self.calls: list[tuple[str, dict]] = []
+            FakeTushareClient.last_instance = self
+
+        def query(self, api_name: str, **params):
+            self.calls.append((api_name, dict(params)))
+            if api_name == "trade_cal":
+                return pd.DataFrame([{"cal_date": "20260102", "is_open": "1"}])
+
+            if api_name == "fund_daily":
+                offset = int(params.get("offset") or 0)
+                limit = int(params.get("limit") or 2)
+                all_rows = [
+                    {"ts_code": "513100.SH", "trade_date": "20260102", "close": 1.0},
+                    {"ts_code": "510300.SH", "trade_date": "20260102", "close": 2.0},
+                    {"ts_code": "510500.SH", "trade_date": "20260102", "close": 3.0},
+                    {"ts_code": "159915.SZ", "trade_date": "20260102", "close": 4.0},
+                    {"ts_code": "588000.SH", "trade_date": "20260102", "close": 5.0},
+                ]
+                page = all_rows[offset : offset + limit]
+                return pd.DataFrame(page)
+
+            return pd.DataFrame()
+
+        def query_all(self, api_name: str, **params):
+            # Simulate the real client's offset/limit pagination.
+            page_size = int(params.pop("page_size", 5000) or 5000)
+            out = []
+            offset = 0
+            while True:
+                df_page = self.query(api_name, **params, limit=page_size, offset=offset)
+                if df_page is None or df_page.empty or len(df_page.columns) == 0:
+                    break
+                out.append(df_page)
+                if len(df_page) < page_size:
+                    break
+                offset += page_size
+            return pd.concat(out, ignore_index=True) if out else pd.DataFrame()
+
+    import stock_data.jobs.market as market_mod
+
+    monkeypatch.setattr(market_mod, "TushareClient", FakeTushareClient)
+
+    cat = DuckDBCatalog(cfg.duckdb_path, cfg.parquet_dir)
+    cat.ensure_schema()
+
+    run_market(
+        cfg,
+        token="dummy",
+        catalog=cat,
+        datasets=["etf_daily"],
+        start_date="20260102",
+        end_date="20260102",
+        index_daily_refresh_days=None,
+    )
+
+    assert FakeTushareClient.last_instance is not None
+    calls = FakeTushareClient.last_instance.calls
+    fd_calls = [p for (api, p) in calls if api == "fund_daily"]
+    assert len(fd_calls) == 3
+    assert [int(p.get("offset")) for p in fd_calls] == [0, 2, 4]
+
+    out_path = store_dir / "parquet" / "etf_daily" / "year=2026" / "month=01" / "trade_date=20260102.parquet"
+    out = pd.read_parquet(out_path)
+    assert len(out) == 5
+    assert set(out["ts_code"].astype(str).tolist()) == {"513100.SH", "510300.SH", "510500.SH", "159915.SZ", "588000.SH"}
 
 
 def test_etf_fund_share_schedules_only_lagging_codes(tmp_path: Path, monkeypatch) -> None:
@@ -392,6 +490,9 @@ def test_etf_fund_share_schedules_only_lagging_codes(tmp_path: Path, monkeypatch
                 code = params.get("ts_code")
                 return pd.DataFrame([{ "ts_code": code, "trade_date": "20250131", "fd_share": 2.0 }])
             return pd.DataFrame()
+
+        def query_all(self, api_name: str, **params):
+            return self.query(api_name, **params)
 
     import stock_data.jobs.etf as etf_mod
 
@@ -448,6 +549,9 @@ def test_etf_fund_div_does_not_rerun_without_force_refresh(tmp_path: Path, monke
             self.calls.append((api_name, dict(params)))
             return pd.DataFrame()
 
+        def query_all(self, api_name: str, **params):
+            return self.query(api_name, **params)
+
     import stock_data.jobs.etf as etf_mod
 
     monkeypatch.setattr(etf_mod, "TushareClient", FakeTushareClient)
@@ -495,6 +599,9 @@ def test_etf_empty_response_does_not_overwrite_existing(tmp_path: Path, monkeypa
             if api_name == "fund_share":
                 return pd.DataFrame()  # empty upstream response
             return pd.DataFrame()
+
+        def query_all(self, api_name: str, **params):
+            return self.query(api_name, **params)
 
     import stock_data.jobs.etf as etf_mod
 

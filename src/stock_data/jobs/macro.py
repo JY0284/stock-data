@@ -135,7 +135,7 @@ def run_macro(
                     if max_date and len(max_date) == 8:
                         eff_start = _add_days_yyyymmdd(max_date, -inc_backfill_days)
 
-            df_new = client.query("shibor_lpr", start_date=str(eff_start), end_date=str(end_date))
+            df_new = client.query_all("shibor_lpr", start_date=str(eff_start), end_date=str(end_date))
             if df_new is None:
                 df_new = pd.DataFrame()
             if df_new.empty and existing is not None:
@@ -159,7 +159,7 @@ def run_macro(
                 if max_m and len(max_m) == 6:
                     eff_start_m = _add_months_yyyymm(max_m, -inc_backfill_months)
 
-            df_new = client.query("cn_cpi", start_m=str(eff_start_m), end_m=str(end_m))
+            df_new = client.query_all("cn_cpi", start_m=str(eff_start_m), end_m=str(end_m))
             if df_new is None:
                 df_new = pd.DataFrame()
             if df_new.empty and existing is not None:
@@ -184,7 +184,7 @@ def run_macro(
                 if max_m and len(max_m) == 6:
                     eff_start_m = _add_months_yyyymm(max_m, -inc_backfill_months)
 
-            df_new = client.query("sf_month", start_m=str(eff_start_m), end_m=str(end_m))
+            df_new = client.query_all("sf_month", start_m=str(eff_start_m), end_m=str(end_m))
             if df_new is None:
                 df_new = pd.DataFrame()
             if df_new.empty and existing is not None:
@@ -208,7 +208,7 @@ def run_macro(
                 if max_m and len(max_m) == 6:
                     eff_start_m = _add_months_yyyymm(max_m, -inc_backfill_months)
 
-            df_new = client.query("cn_m", start_m=str(eff_start_m), end_m=str(end_m))
+            df_new = client.query_all("cn_m", start_m=str(eff_start_m), end_m=str(end_m))
             if df_new is None:
                 df_new = pd.DataFrame()
             if df_new.empty and existing is not None:
